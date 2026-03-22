@@ -23,7 +23,7 @@ use cosmic::iced::{
     window::{self, Id},
 };
 use cosmic::iced_core::text::{self as core_text};
-use cosmic::iced_core::{Background, Color, Event, Size, Vector};
+use cosmic::iced_core::{Background, Color, Event, Vector};
 use cosmic::iced_futures::futures::{self, SinkExt};
 use cosmic::iced_futures::stream;
 use cosmic::iced_widget::{column, container, row, scrollable, text};
@@ -31,6 +31,7 @@ use cosmic::prelude::*;
 use cosmic::widget::button::Catalog;
 use cosmic::widget::{self, button, header_bar};
 use reqwest::Client;
+use std::collections::HashMap;
 use std::sync::{Arc, OnceLock};
 use std::time::Duration;
 use tokio::sync::Mutex;
@@ -41,13 +42,12 @@ const PANEL_MIN_HEIGHT: f32 = 560.0;
 const CHAT_ACTIONS_WIDTH: f32 = 84.0;
 const COMPOSER_LINE_HEIGHT: f32 = 28.0;
 const COMPOSER_MAX_HEIGHT: f32 = PANEL_MIN_HEIGHT * 0.5;
-const COMPOSER_SOFT_WRAP_LIMIT: f32 = 300.0;
+const COMPOSER_EDITOR_WIDTH: f32 = PANEL_WIDTH - 108.0;
 const THIN_SCROLLBAR_WIDTH: f32 = 4.0;
 const THIN_SCROLLER_WIDTH: f32 = 3.0;
 const LOADING_TICK_MS: u64 = 120;
-const PANEL_ANIMATION_TICK_MS: u64 = 12;
-const PANEL_ANIMATION_MIN_STEP: f32 = 6.0;
-const PANEL_ANIMATION_FACTOR: f32 = 0.18;
+const MESSAGE_MAX_WIDTH: f32 = PANEL_WIDTH * 0.86;
+const CHAT_AUTOSCROLL_THRESHOLD_PX: f32 = 36.0;
 
 static PROVIDER_EVENTS_RX: OnceLock<Arc<Mutex<UnboundedReceiver<provider::ProviderEvent>>>> =
     OnceLock::new();
@@ -58,23 +58,6 @@ enum PanelView {
     Chat,
     Chats,
     Settings,
-}
-
-#[derive(Debug, Clone, Copy, Default, Eq, PartialEq)]
-enum PanelAnimation {
-    #[default]
-    Closed,
-    Opening,
-    Open,
-    Closing,
-}
-
-#[derive(Debug, Clone, Copy, Default, Eq, PartialEq)]
-enum ComposerBreak {
-    #[default]
-    Hard,
-    SoftSpace,
-    SoftNone,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -168,13 +151,15 @@ fn panel_reserved_margin(core: &Core) -> IcedMargin {
 pub struct AppModel {
     core: Core,
     panel_window: Option<Id>,
+    panel_requested_open: bool,
     config: Config,
     panel_view: PanelView,
     state: PersistedState,
-    composer_lines: Vec<String>,
-    composer_breaks: Vec<ComposerBreak>,
-    composer_input_ids: Vec<widget::Id>,
-    composer_focused_line: Option<usize>,
+    composer_content: widget::text_editor::Content,
+    composer_editor_id: widget::Id,
+    messages_scroll_id: widget::Id,
+    messages_bottom_distance: f32,
+    assistant_markdown: HashMap<u64, widget::markdown::Content>,
     rename_chat_id: Option<u64>,
     rename_input: String,
     hovered_chat_id: Option<u64>,
@@ -183,8 +168,6 @@ pub struct AppModel {
     provider_events_tx: UnboundedSender<provider::ProviderEvent>,
     inflight_request: Option<InflightRequest>,
     chat_error: Option<ChatErrorState>,
-    panel_animation: PanelAnimation,
-    panel_width: f32,
     loading_chat_id: Option<u64>,
     loading_phase: u8,
     status: Option<String>,
@@ -210,15 +193,11 @@ pub enum Message {
     DeleteChat(u64),
     OpenSettings,
     CloseSettings,
-    ComposerLineChanged(usize, String),
-    ComposerLineFocused(usize),
-    ComposerLineUnfocused(usize),
-    ComposerEnter(Id, bool),
-    ComposerBackspace(Id),
-    ComposerSelectAll(Id),
+    ChatScrolled(cosmic::iced::widget::scrollable::Viewport),
+    ComposerEdited(widget::text_editor::Action),
+    MarkdownLink(widget::markdown::Uri),
     SubmitComposer,
     LoadingTick,
-    PanelAnimationTick,
     ProviderEvent(provider::ProviderEvent),
     RetryRequest(u64),
     ProviderSelected(usize),
@@ -285,7 +264,7 @@ impl cosmic::Application for AppModel {
 
         let settings_form = SettingsForm::from_settings(&state.settings);
 
-        let app = AppModel {
+        let mut app = AppModel {
             core,
             state,
             settings_form,
@@ -298,6 +277,7 @@ impl cosmic::Application for AppModel {
                 .unwrap_or_default(),
             ..Self::default_state()
         };
+        app.rebuild_markdown_cache();
 
         (app, Task::none())
     }
@@ -349,7 +329,10 @@ impl cosmic::Application for AppModel {
                 button::icon(widget::icon::from_name("preferences-system-symbolic").size(16))
                     .on_press(Message::OpenSettings),
             )
-            .end(button::text("-").on_press(Message::TogglePanel));
+            .end(
+                button::icon(widget::icon::from_name("window-close-symbolic").size(16))
+                    .on_press(Message::TogglePanel),
+            );
 
         let main_view = match self.panel_view {
             PanelView::Chat => self.chat_screen(),
@@ -362,20 +345,10 @@ impl cosmic::Application for AppModel {
             .height(Length::Fill)
             .class(cosmic::style::Container::Background);
 
-        let panel = column![header, body]
+        column![header, body]
             .width(Length::Fixed(PANEL_WIDTH))
-            .height(Length::Fill);
-
-        row![
-            container(text("")).width(Length::Fill),
-            container(panel)
-                .width(Length::Fixed(self.panel_width.max(1.0)))
-                .height(Length::Fill)
-                .align_x(alignment::Horizontal::Right)
-        ]
-        .width(Length::Fill)
-        .height(Length::Fill)
-        .into()
+            .height(Length::Fill)
+            .into()
     }
 
     /// Register subscriptions for this application.
@@ -401,37 +374,10 @@ impl cosmic::Application for AppModel {
                     key: keyboard::Key::Named(keyboard::key::Named::Escape),
                     ..
                 }) => Some(Message::EscapePressed(id)),
-                Event::Keyboard(keyboard::Event::KeyPressed {
-                    key: keyboard::Key::Character(c),
-                    modifiers,
-                    ..
-                }) if c.eq_ignore_ascii_case("a") && modifiers.control() => {
-                    Some(Message::ComposerSelectAll(id))
-                }
-                Event::Keyboard(keyboard::Event::KeyPressed {
-                    key: keyboard::Key::Named(keyboard::key::Named::Enter),
-                    modifiers,
-                    ..
-                }) => Some(Message::ComposerEnter(id, modifiers.shift())),
-                Event::Keyboard(keyboard::Event::KeyPressed {
-                    key: keyboard::Key::Named(keyboard::key::Named::Backspace),
-                    ..
-                }) => Some(Message::ComposerBackspace(id)),
                 _ => None,
             }),
             if self.loading_chat_id.is_some() {
                 time::every(Duration::from_millis(LOADING_TICK_MS)).map(|_| Message::LoadingTick)
-            } else {
-                Subscription::none()
-            },
-            if self.panel_window.is_some()
-                && matches!(
-                    self.panel_animation,
-                    PanelAnimation::Opening | PanelAnimation::Closing
-                )
-            {
-                time::every(Duration::from_millis(PANEL_ANIMATION_TICK_MS))
-                    .map(|_| Message::PanelAnimationTick)
             } else {
                 Subscription::none()
             },
@@ -459,11 +405,11 @@ impl cosmic::Application for AppModel {
                 self.reset_composer();
                 self.rename_chat_id = None;
                 self.persist_state();
+                return self.scroll_messages_to_end(true);
             }
             Message::ToggleChatList => {
                 self.rename_chat_id = None;
                 self.rename_input.clear();
-                self.composer_focused_line = None;
                 self.panel_view = if self.panel_view == PanelView::Chats {
                     PanelView::Chat
                 } else {
@@ -475,6 +421,7 @@ impl cosmic::Application for AppModel {
                 self.panel_view = PanelView::Chat;
                 self.rename_chat_id = None;
                 self.hovered_chat_id = None;
+                return self.scroll_messages_to_end(true);
             }
             Message::ChatHovered(chat_id) => {
                 self.hovered_chat_id = Some(chat_id);
@@ -528,51 +475,19 @@ impl cosmic::Application for AppModel {
             }
             Message::OpenSettings => {
                 self.panel_view = PanelView::Settings;
-                self.composer_focused_line = None;
             }
             Message::CloseSettings => {
                 self.panel_view = PanelView::Chat;
+                return self.scroll_messages_to_end(true);
             }
-            Message::ComposerLineChanged(index, value) => {
-                return self.update_composer_line(index, value);
+            Message::ChatScrolled(viewport) => {
+                self.messages_bottom_distance = viewport.absolute_offset_reversed().y;
             }
-            Message::ComposerLineFocused(index) => {
-                self.composer_focused_line = Some(index);
+            Message::ComposerEdited(action) => {
+                self.composer_content.perform(action);
             }
-            Message::ComposerLineUnfocused(index) => {
-                if self.composer_focused_line == Some(index) {
-                    self.composer_focused_line = None;
-                }
-            }
-            Message::ComposerEnter(id, shift) => {
-                if self.panel_window == Some(id)
-                    && self.panel_view == PanelView::Chat
-                    && self.composer_focused_line.is_some()
-                {
-                    return if shift {
-                        self.insert_composer_line_after_focus()
-                    } else {
-                        self.submit_message()
-                    };
-                }
-            }
-            Message::ComposerBackspace(id) => {
-                if self.panel_window == Some(id)
-                    && self.panel_view == PanelView::Chat
-                    && self.composer_focused_line.is_some()
-                {
-                    return self.remove_empty_focused_composer_line();
-                }
-            }
-            Message::ComposerSelectAll(id) => {
-                if self.panel_window == Some(id)
-                    && self.panel_view == PanelView::Chat
-                    && self.composer_focused_line.is_some()
-                {
-                    if let Some(input_id) = self.focused_composer_input_id() {
-                        return widget::text_input::select_all(input_id);
-                    }
-                }
+            Message::MarkdownLink(_uri) => {
+                // Link handling can be added later without affecting chat stability.
             }
             Message::SubmitComposer => {
                 return self.submit_message();
@@ -580,18 +495,18 @@ impl cosmic::Application for AppModel {
             Message::LoadingTick => {
                 self.loading_phase = (self.loading_phase + 1) % 6;
             }
-            Message::PanelAnimationTick => {
-                return self.advance_panel_animation();
-            }
             Message::ProviderEvent(event) => match event {
                 provider::ProviderEvent::Delta { chat_id, delta } => {
                     self.handle_provider_delta(chat_id, delta);
+                    return self.scroll_messages_to_end(false);
                 }
                 provider::ProviderEvent::Finished { chat_id } => {
                     self.handle_provider_finished(chat_id);
+                    return self.scroll_messages_to_end(false);
                 }
                 provider::ProviderEvent::Failed { chat_id, error } => {
                     self.handle_provider_failed(chat_id, error);
+                    return self.scroll_messages_to_end(false);
                 }
             },
             Message::RetryRequest(chat_id) => {
@@ -630,14 +545,10 @@ impl cosmic::Application for AppModel {
                 self.persist_state();
             }
             Message::TogglePanel => {
-                return if self.panel_window.is_some() {
-                    match self.panel_animation {
-                        PanelAnimation::Closing => self.start_opening_animation(),
-                        PanelAnimation::Open | PanelAnimation::Opening => {
-                            self.start_closing_animation()
-                        }
-                        PanelAnimation::Closed => Task::none(),
-                    }
+                return if let Some(id) = self.panel_window.take() {
+                    self.panel_requested_open = false;
+                    self.panel_view = PanelView::Chat;
+                    destroy_layer_surface(id)
                 } else {
                     self.open_panel()
                 };
@@ -646,17 +557,19 @@ impl cosmic::Application for AppModel {
                 if self.panel_window == Some(id) {
                     if self.panel_view != PanelView::Chat {
                         self.panel_view = PanelView::Chat;
-                        self.composer_focused_line = None;
                     } else {
-                        return self.start_closing_animation();
+                        self.panel_requested_open = false;
+                        self.panel_window = None;
+                        return destroy_layer_surface(id);
                     }
                 }
             }
             Message::PanelClosed(id) => {
                 if self.panel_window == Some(id) {
                     self.panel_window = None;
-                    self.panel_animation = PanelAnimation::Closed;
-                    self.panel_width = 0.0;
+                    if self.panel_requested_open {
+                        return self.open_panel();
+                    }
                 }
             }
         }
@@ -677,13 +590,15 @@ impl AppModel {
         Self {
             core: Core::default(),
             panel_window: None,
+            panel_requested_open: false,
             config: Config::default(),
             panel_view: PanelView::Chat,
             state: PersistedState::default(),
-            composer_lines: vec![String::new()],
-            composer_breaks: vec![ComposerBreak::Hard],
-            composer_input_ids: vec![widget::Id::unique()],
-            composer_focused_line: None,
+            composer_content: widget::text_editor::Content::new(),
+            composer_editor_id: widget::Id::unique(),
+            messages_scroll_id: widget::Id::unique(),
+            messages_bottom_distance: 0.0,
+            assistant_markdown: HashMap::new(),
             rename_chat_id: None,
             rename_input: String::new(),
             hovered_chat_id: None,
@@ -692,8 +607,6 @@ impl AppModel {
             provider_events_tx,
             inflight_request: None,
             chat_error: None,
-            panel_animation: PanelAnimation::Closed,
-            panel_width: 0.0,
             loading_chat_id: None,
             loading_phase: 0,
             status: None,
@@ -701,263 +614,47 @@ impl AppModel {
     }
 
     fn reset_composer(&mut self) {
-        self.composer_lines = vec![String::new()];
-        self.composer_breaks = vec![ComposerBreak::Hard];
-        self.composer_input_ids = vec![widget::Id::unique()];
-        self.composer_focused_line = None;
+        self.composer_content = widget::text_editor::Content::new();
     }
 
     fn composer_text(&self) -> String {
-        let mut composed = String::new();
-        for (index, line) in self.composer_lines.iter().enumerate() {
-            if index > 0 {
-                match self
-                    .composer_breaks
-                    .get(index)
-                    .copied()
-                    .unwrap_or(ComposerBreak::Hard)
-                {
-                    ComposerBreak::Hard => composed.push('\n'),
-                    ComposerBreak::SoftSpace => composed.push(' '),
-                    ComposerBreak::SoftNone => {}
-                }
-            }
-            composed.push_str(line);
-        }
-        composed
-    }
-
-    fn update_composer_line(
-        &mut self,
-        index: usize,
-        value: String,
-    ) -> Task<cosmic::Action<Message>> {
-        if index >= self.composer_lines.len() {
-            return Task::none();
-        }
-
-        let parts: Vec<String> = value.split('\n').map(str::to_string).collect();
-        self.composer_lines[index] = parts.first().cloned().unwrap_or_default();
-
-        if parts.len() == 1 {
-            return self.reflow_soft_paragraph(index);
-        }
-
-        let mut last_id = None;
-        let mut insert_at = index + 1;
-        for line in parts.into_iter().skip(1) {
-            let id = widget::Id::unique();
-            self.composer_lines.insert(insert_at, line);
-            self.composer_breaks.insert(insert_at, ComposerBreak::Hard);
-            self.composer_input_ids.insert(insert_at, id.clone());
-            last_id = Some(id);
-            insert_at += 1;
-        }
-
-        self.composer_focused_line = Some(insert_at.saturating_sub(1));
-
-        if let Some(id) = last_id {
-            widget::text_input::focus(id)
-        } else {
-            Task::none()
-        }
-    }
-
-    fn insert_composer_line_after_focus(&mut self) -> Task<cosmic::Action<Message>> {
-        let Some(index) = self.composer_focused_line else {
-            return Task::none();
-        };
-
-        let new_index = (index + 1).min(self.composer_lines.len());
-        let id = widget::Id::unique();
-        self.composer_lines.insert(new_index, String::new());
-        self.composer_breaks.insert(new_index, ComposerBreak::Hard);
-        self.composer_input_ids.insert(new_index, id.clone());
-        self.composer_focused_line = Some(new_index);
-
-        widget::text_input::focus(id)
-    }
-
-    fn remove_empty_focused_composer_line(&mut self) -> Task<cosmic::Action<Message>> {
-        let Some(index) = self.composer_focused_line else {
-            return Task::none();
-        };
-
-        if index == 0 || self.composer_lines.len() == 1 || !self.composer_lines[index].is_empty() {
-            return Task::none();
-        }
-
-        self.composer_lines.remove(index);
-        self.composer_breaks.remove(index);
-        self.composer_input_ids.remove(index);
-        let focus_index = index - 1;
-        self.composer_focused_line = Some(focus_index);
-
-        widget::text_input::focus(self.composer_input_ids[focus_index].clone())
-    }
-
-    fn reflow_soft_paragraph(&mut self, index: usize) -> Task<cosmic::Action<Message>> {
-        if index >= self.composer_lines.len() {
-            return Task::none();
-        }
-
-        let mut start = index;
-        while start > 0 && self.composer_breaks[start] != ComposerBreak::Hard {
-            start -= 1;
-        }
-
-        let mut end = index;
-        while end + 1 < self.composer_lines.len()
-            && self.composer_breaks[end + 1] != ComposerBreak::Hard
-        {
-            end += 1;
-        }
-
-        let preserved_break = self.composer_breaks[start];
-        let mut paragraph = self.composer_lines[start].clone();
-        for line_index in (start + 1)..=end {
-            match self.composer_breaks[line_index] {
-                ComposerBreak::SoftSpace => paragraph.push(' '),
-                ComposerBreak::SoftNone => {}
-                ComposerBreak::Hard => {}
-            }
-            paragraph.push_str(&self.composer_lines[line_index]);
-        }
-
-        let mut anchor_offset = 0usize;
-        for line_index in start..=index {
-            if line_index > start && self.composer_breaks[line_index] == ComposerBreak::SoftSpace {
-                anchor_offset += 1;
-            }
-            anchor_offset += self.composer_lines[line_index].chars().count();
-        }
-
-        let old_lines = self.composer_lines[start..=end].to_vec();
-        let old_breaks = if start < end {
-            self.composer_breaks[(start + 1)..=end].to_vec()
-        } else {
-            Vec::new()
-        };
-        let (new_lines, new_breaks) = wrap_soft_paragraph(&paragraph);
-
-        if new_lines == old_lines && new_breaks == old_breaks {
-            return Task::none();
-        }
-
-        let focus_relative = focus_line_for_offset(&new_lines, &new_breaks, anchor_offset);
-        let new_focus_index = start + focus_relative;
-        let old_ids = self.composer_input_ids[start..=end].to_vec();
-
-        self.composer_lines.splice(start..=end, new_lines.clone());
-
-        let mut breaks_to_insert = vec![preserved_break];
-        breaks_to_insert.extend(new_breaks.iter().copied());
-        self.composer_breaks.splice(start..=end, breaks_to_insert);
-
-        let new_ids = (0..new_lines.len())
-            .map(|line_index| {
-                old_ids
-                    .get(line_index)
-                    .cloned()
-                    .unwrap_or_else(widget::Id::unique)
-            })
-            .collect::<Vec<_>>();
-        self.composer_input_ids.splice(start..=end, new_ids.clone());
-        self.composer_focused_line = Some(new_focus_index);
-
-        widget::text_input::focus(new_ids[focus_relative].clone())
-    }
-
-    fn focused_composer_input_id(&self) -> Option<widget::Id> {
-        self.composer_focused_line
-            .and_then(|index| self.composer_input_ids.get(index))
-            .cloned()
+        self.composer_content.text()
     }
 
     fn open_panel(&mut self) -> Task<cosmic::Action<Message>> {
         let id = Id::unique();
         self.panel_window = Some(id);
-        self.panel_animation = PanelAnimation::Opening;
-        self.panel_width = 1.0;
+        self.panel_requested_open = true;
+        self.messages_bottom_distance = 0.0;
 
-        get_layer_surface::<cosmic::Action<Message>>(SctkLayerSurfaceSettings {
-            id,
-            layer: Layer::Top,
-            keyboard_interactivity: KeyboardInteractivity::OnDemand,
-            anchor: Anchor::RIGHT.union(Anchor::TOP).union(Anchor::BOTTOM),
-            namespace: <Self as cosmic::Application>::APP_ID.to_string(),
-            margin: panel_reserved_margin(&self.core),
-            size: Some((Some(PANEL_WIDTH as u32), None)),
-            exclusive_zone: -1,
-            size_limits: Limits::NONE
-                .min_width(PANEL_WIDTH)
-                .min_height(PANEL_MIN_HEIGHT),
-            ..Default::default()
-        })
+        Task::batch([
+            get_layer_surface::<cosmic::Action<Message>>(SctkLayerSurfaceSettings {
+                id,
+                layer: Layer::Top,
+                keyboard_interactivity: KeyboardInteractivity::OnDemand,
+                anchor: Anchor::RIGHT.union(Anchor::TOP).union(Anchor::BOTTOM),
+                namespace: <Self as cosmic::Application>::APP_ID.to_string(),
+                margin: panel_reserved_margin(&self.core),
+                size: Some((Some(PANEL_WIDTH as u32), None)),
+                exclusive_zone: -1,
+                size_limits: Limits::NONE
+                    .min_width(PANEL_WIDTH)
+                    .min_height(PANEL_MIN_HEIGHT),
+                ..Default::default()
+            }),
+            self.scroll_messages_to_end(true),
+        ])
     }
 
     fn handle_applet_pressed(&mut self) -> Task<cosmic::Action<Message>> {
-        match (self.panel_window, self.panel_animation) {
-            (None, _) => self.open_panel(),
-            (Some(_), PanelAnimation::Closing) => self.start_opening_animation(),
-            (Some(_), PanelAnimation::Opening | PanelAnimation::Open) => {
-                self.start_closing_animation()
+        match self.panel_window {
+            Some(id) => {
+                self.panel_requested_open = false;
+                self.panel_window = None;
+                self.panel_view = PanelView::Chat;
+                destroy_layer_surface(id)
             }
-            (Some(_), PanelAnimation::Closed) => Task::none(),
-        }
-    }
-
-    fn opening_step(&self) -> f32 {
-        let remaining = PANEL_WIDTH - self.panel_width;
-        (remaining * PANEL_ANIMATION_FACTOR).max(PANEL_ANIMATION_MIN_STEP)
-    }
-
-    fn closing_step(&self) -> f32 {
-        (self.panel_width * PANEL_ANIMATION_FACTOR).max(PANEL_ANIMATION_MIN_STEP)
-    }
-
-    fn start_opening_animation(&mut self) -> Task<cosmic::Action<Message>> {
-        self.panel_animation = PanelAnimation::Opening;
-        self.panel_width = (self.panel_width + self.opening_step()).min(PANEL_WIDTH);
-        if self.panel_width >= PANEL_WIDTH {
-            self.panel_animation = PanelAnimation::Open;
-        }
-        Task::none()
-    }
-
-    fn start_closing_animation(&mut self) -> Task<cosmic::Action<Message>> {
-        self.panel_animation = PanelAnimation::Closing;
-        self.panel_width = (self.panel_width - self.closing_step()).max(1.0);
-        Task::none()
-    }
-
-    fn advance_panel_animation(&mut self) -> Task<cosmic::Action<Message>> {
-        let Some(id) = self.panel_window else {
-            self.panel_animation = PanelAnimation::Closed;
-            self.panel_width = 0.0;
-            return Task::none();
-        };
-
-        match self.panel_animation {
-            PanelAnimation::Opening => {
-                self.panel_width = (self.panel_width + self.opening_step()).min(PANEL_WIDTH);
-                if self.panel_width >= PANEL_WIDTH {
-                    self.panel_animation = PanelAnimation::Open;
-                }
-                Task::none()
-            }
-            PanelAnimation::Closing => {
-                self.panel_width = (self.panel_width - self.closing_step()).max(1.0);
-                if self.panel_width <= 1.0 {
-                    self.panel_window = None;
-                    self.panel_animation = PanelAnimation::Closed;
-                    self.panel_width = 0.0;
-                    destroy_layer_surface(id)
-                } else {
-                    Task::none()
-                }
-            }
-            PanelAnimation::Open | PanelAnimation::Closed => Task::none(),
+            None => self.open_panel(),
         }
     }
 
@@ -1005,6 +702,8 @@ impl AppModel {
             self.rename_chat_id = None;
             self.rename_input.clear();
         }
+
+        self.rebuild_markdown_cache();
     }
 
     fn persist_state(&mut self) {
@@ -1022,8 +721,59 @@ impl AppModel {
         message_id
     }
 
+    fn rebuild_markdown_cache(&mut self) {
+        self.assistant_markdown.clear();
+
+        for chat in &self.state.chats {
+            for message in &chat.messages {
+                if message.role == ChatRole::Assistant {
+                    self.assistant_markdown.insert(
+                        message.id,
+                        widget::markdown::Content::parse(&message.content),
+                    );
+                }
+            }
+        }
+    }
+
+    fn has_selected_model(&self) -> bool {
+        !self.state.settings.active_model().trim().is_empty()
+    }
+
+    fn active_model_label(&self) -> String {
+        let model = self.state.settings.active_model().trim();
+        if model.is_empty() {
+            "Модель не выбрана".into()
+        } else {
+            match self.state.settings.provider {
+                ProviderKind::LmStudio => format!("{model} (local)"),
+                ProviderKind::OpenRouter => model.to_string(),
+            }
+        }
+    }
+
+    fn can_follow_chat(&self) -> bool {
+        self.messages_bottom_distance <= CHAT_AUTOSCROLL_THRESHOLD_PX
+    }
+
+    fn scroll_messages_to_end(&mut self, force: bool) -> Task<cosmic::Action<Message>> {
+        if force {
+            self.messages_bottom_distance = 0.0;
+        }
+
+        if force || self.can_follow_chat() {
+            cosmic::iced::widget::operation::snap_to_end(self.messages_scroll_id.clone())
+        } else {
+            Task::none()
+        }
+    }
+
     fn submit_message(&mut self) -> Task<cosmic::Action<Message>> {
         if self.inflight_request.is_some() {
+            return Task::none();
+        }
+
+        if !self.has_selected_model() {
             return Task::none();
         }
 
@@ -1069,21 +819,16 @@ impl AppModel {
                         messages: Vec::new(),
                     },
                 });
-                return if let Some(id) = self.composer_input_ids.first() {
-                    widget::text_input::focus(id.clone())
-                } else {
-                    Task::none()
-                };
+                return cosmic::iced::widget::operation::focus(self.composer_editor_id.clone());
             }
         };
 
         self.start_provider_request(active_chat_id, request);
 
-        if let Some(id) = self.composer_input_ids.first() {
-            widget::text_input::focus(id.clone())
-        } else {
-            Task::none()
-        }
+        Task::batch([
+            cosmic::iced::widget::operation::focus(self.composer_editor_id.clone()),
+            self.scroll_messages_to_end(true),
+        ])
     }
 
     fn build_provider_request(&self, chat_id: u64) -> Result<ProviderRequest, String> {
@@ -1164,6 +909,10 @@ impl AppModel {
                     .find(|message| message.id == message_id)
                 {
                     message.content.push_str(&delta);
+                    self.assistant_markdown
+                        .entry(message_id)
+                        .or_insert_with(|| widget::markdown::Content::new())
+                        .push_str(&delta);
                     chat.touch();
                 }
             }
@@ -1176,6 +925,19 @@ impl AppModel {
             chat.messages.push(assistant_message);
             chat.touch();
         }
+        self.assistant_markdown.insert(
+            assistant_message_id,
+            widget::markdown::Content::parse(
+                &self
+                    .state
+                    .chats
+                    .iter()
+                    .find(|chat| chat.id == chat_id)
+                    .and_then(|chat| chat.messages.last())
+                    .map(|message| message.content.as_str())
+                    .unwrap_or_default(),
+            ),
+        );
         if let Some(inflight) = self.inflight_request.as_mut() {
             inflight.assistant_message_id = Some(assistant_message_id);
         }
@@ -1217,68 +979,79 @@ impl AppModel {
 
     fn chat_screen(&self) -> Element<'_, Message> {
         let spacing = cosmic::theme::spacing();
+        let model_selected = self.has_selected_model();
+        let placeholder = if model_selected {
+            fl!("composer-placeholder")
+        } else {
+            "Выберите модель в настройках".into()
+        };
+
+        let model_tone = if model_selected {
+            Color::from_rgba(1.0, 1.0, 1.0, 0.72)
+        } else {
+            Color::from_rgb(1.0, 0.42, 0.42)
+        };
+        let model_bar = container(
+            column![
+                widget::text::caption("Active model").class(cosmic::theme::Text::Color(
+                    Color::from_rgba(1.0, 1.0, 1.0, 0.58)
+                )),
+                widget::text::body(self.active_model_label())
+                    .class(cosmic::theme::Text::Color(model_tone)),
+            ]
+            .spacing(spacing.space_xxs),
+        )
+        .padding([spacing.space_s, spacing.space_m])
+        .class(chat_list_card_class());
+
         let messages = scrollable(self.message_column())
+            .anchor_bottom()
+            .id(self.messages_scroll_id.clone())
+            .on_scroll(Message::ChatScrolled)
             .class(cosmic::style::iced::Scrollable::Minimal)
             .direction(thin_vertical_scrollbar())
             .height(Length::Fill)
             .width(Length::Fill);
 
-        let mut composer_inputs = widget::column().spacing(0);
-        for (index, line) in self.composer_lines.iter().enumerate() {
-            let placeholder = if self.composer_lines.len() == 1 {
-                fl!("composer-placeholder")
-            } else {
-                String::new()
-            };
+        let composer_editor = widget::text_editor(&self.composer_content)
+            .id(self.composer_editor_id.clone())
+            .placeholder(placeholder)
+            .on_action(Message::ComposerEdited)
+            .key_binding(composer_key_binding)
+            .padding([8, 0])
+            .height(Length::Shrink)
+            .min_height(COMPOSER_LINE_HEIGHT + 12.0)
+            .max_height(COMPOSER_MAX_HEIGHT)
+            .wrapping(core_text::Wrapping::Word)
+            .class(composer_editor_class())
+            .width(COMPOSER_EDITOR_WIDTH);
 
-            let input = widget::text_input::text_input(placeholder, line)
-                .id(self.composer_input_ids[index].clone())
-                .padding([2, 0])
-                .style(composer_input_class())
-                .on_input(move |value| Message::ComposerLineChanged(index, value))
-                .on_focus(Message::ComposerLineFocused(index))
-                .on_unfocus(Message::ComposerLineUnfocused(index));
+        let mut send_button = button::custom(
+            container(widget::text::body("↑").size(20))
+                .width(Length::Fill)
+                .height(Length::Fill)
+                .center_x(Length::Fill)
+                .center_y(Length::Fill),
+        )
+        .width(Length::Fixed(36.0))
+        .height(Length::Fixed(36.0))
+        .padding(0)
+        .class(send_button_class());
 
-            composer_inputs = composer_inputs.push(input.width(Length::Fill));
+        if model_selected {
+            send_button = send_button.on_press(Message::SubmitComposer);
         }
 
-        let composer_height = (self.composer_lines.len() as f32 * COMPOSER_LINE_HEIGHT)
-            .clamp(COMPOSER_LINE_HEIGHT, COMPOSER_MAX_HEIGHT);
-        let composer_alignment = if self.composer_lines.len() == 1 {
-            Alignment::Center
-        } else {
-            Alignment::End
-        };
-        let composer_editor = scrollable(composer_inputs)
-            .class(cosmic::style::iced::Scrollable::Minimal)
-            .direction(thin_vertical_scrollbar())
-            .height(Length::Fixed(composer_height))
-            .width(Length::Fill);
-
         let composer = container(
-            row![
-                composer_editor,
-                button::custom(
-                    container(widget::text::body("↑").size(20))
-                        .width(Length::Fill)
-                        .height(Length::Fill)
-                        .center_x(Length::Fill)
-                        .center_y(Length::Fill),
-                )
-                .width(Length::Fixed(36.0))
-                .height(Length::Fixed(36.0))
-                .padding(0)
-                .class(send_button_class())
-                .on_press(Message::SubmitComposer)
-            ]
-            .spacing(spacing.space_xs)
-            .align_y(composer_alignment),
+            row![composer_editor, send_button]
+                .spacing(spacing.space_xs)
+                .align_y(Alignment::End),
         )
         .padding(spacing.space_m)
         .class(composer_container_class());
 
-        let mut content = widget::column().spacing(spacing.space_s);
-        content = content.push(messages).push(composer);
+        let mut content = widget::column().spacing(spacing.space_m);
+        content = content.push(model_bar).push(messages).push(composer);
 
         if let Some(status) = &self.status {
             content = content.push(widget::text::caption(status));
@@ -1521,7 +1294,7 @@ impl AppModel {
         messages.into()
     }
 
-    fn message_card<'a>(&self, message: &'a ChatMessage) -> Element<'a, Message> {
+    fn message_card<'a>(&'a self, message: &'a ChatMessage) -> Element<'a, Message> {
         let spacing = cosmic::theme::spacing();
         match message.role {
             ChatRole::User => {
@@ -1530,17 +1303,46 @@ impl AppModel {
                         .class(cosmic::theme::Text::Color(Color::WHITE))
                         .wrapping(cosmic::iced::widget::text::Wrapping::Word),
                 )
-                .max_width(PANEL_WIDTH * 0.72);
+                .padding([spacing.space_s, spacing.space_m])
+                .max_width(MESSAGE_MAX_WIDTH);
 
                 container(text_block)
                     .width(Length::Fill)
                     .align_x(alignment::Horizontal::Right)
+                    .padding([0, spacing.space_l, 0, spacing.space_xxs])
                     .into()
             }
-            ChatRole::Assistant | ChatRole::System => {
+            ChatRole::Assistant => {
+                let markdown_theme = if cosmic::theme::is_dark() {
+                    cosmic::iced::Theme::Dark
+                } else {
+                    cosmic::iced::Theme::Light
+                };
+                let markdown = self.assistant_markdown.get(&message.id);
+                let bubble = container(if let Some(markdown) = markdown {
+                    widget::markdown::view(
+                        markdown.items(),
+                        widget::markdown::Settings::with_style(markdown_theme),
+                    )
+                    .map(Message::MarkdownLink)
+                } else {
+                    widget::text::body(&message.content)
+                        .wrapping(cosmic::iced::widget::text::Wrapping::Word)
+                        .into()
+                })
+                .padding([spacing.space_s, spacing.space_m])
+                .max_width(MESSAGE_MAX_WIDTH)
+                .class(chat_bubble_class(false));
+
+                container(bubble)
+                    .width(Length::Fill)
+                    .align_x(alignment::Horizontal::Left)
+                    .into()
+            }
+            ChatRole::System => {
                 let bubble = container(widget::text::body(&message.content))
                     .padding([spacing.space_s, spacing.space_m])
-                    .max_width(PANEL_WIDTH * 0.72)
+                    .max_width(MESSAGE_MAX_WIDTH)
                     .class(chat_bubble_class(false));
 
                 container(bubble)
@@ -1666,112 +1468,88 @@ fn summarize_title(prompt: &str) -> String {
     }
 }
 
-fn wrap_soft_paragraph(text: &str) -> (Vec<String>, Vec<ComposerBreak>) {
-    if text.is_empty() {
-        return (vec![String::new()], vec![]);
+fn composer_key_binding(
+    key_press: widget::text_editor::KeyPress,
+) -> Option<widget::text_editor::Binding<Message>> {
+    use widget::text_editor::{Binding, Motion};
+
+    let modifiers = key_press.modifiers;
+
+    match key_press.key.to_latin(key_press.physical_key) {
+        Some('c') | Some('C') if modifiers.command() => return Some(Binding::Copy),
+        Some('x') | Some('X') if modifiers.command() => return Some(Binding::Cut),
+        Some('v') | Some('V') if modifiers.command() && !modifiers.alt() => {
+            return Some(Binding::Paste);
+        }
+        Some('a') | Some('A') if modifiers.command() => {
+            return Some(Binding::SelectAll);
+        }
+        _ => {}
     }
 
-    let mut remaining = text.to_string();
-    let mut lines = Vec::new();
-    let mut breaks = Vec::new();
+    let jump_modifier = modifiers.control() || modifiers.alt();
 
-    loop {
-        let Some((head, tail, break_kind)) = split_soft_wrap(&remaining, COMPOSER_SOFT_WRAP_LIMIT)
-        else {
-            lines.push(remaining);
-            break;
+    if let keyboard::Key::Named(named) = key_press.key.as_ref() {
+        let motion = match named {
+            keyboard::key::Named::ArrowLeft => Some(if jump_modifier {
+                Motion::WordLeft
+            } else {
+                Motion::Left
+            }),
+            keyboard::key::Named::ArrowRight => Some(if jump_modifier {
+                Motion::WordRight
+            } else {
+                Motion::Right
+            }),
+            keyboard::key::Named::ArrowUp => Some(Motion::Up),
+            keyboard::key::Named::ArrowDown => Some(Motion::Down),
+            keyboard::key::Named::Home => Some(if jump_modifier {
+                Motion::DocumentStart
+            } else {
+                Motion::Home
+            }),
+            keyboard::key::Named::End => Some(if jump_modifier {
+                Motion::DocumentEnd
+            } else {
+                Motion::End
+            }),
+            keyboard::key::Named::PageUp => Some(Motion::PageUp),
+            keyboard::key::Named::PageDown => Some(Motion::PageDown),
+            _ => None,
         };
 
-        lines.push(head);
-        breaks.push(break_kind);
-        remaining = tail;
-    }
-
-    (lines, breaks)
-}
-
-fn focus_line_for_offset(
-    lines: &[String],
-    breaks: &[ComposerBreak],
-    anchor_offset: usize,
-) -> usize {
-    let mut traversed = 0usize;
-
-    for (index, line) in lines.iter().enumerate() {
-        traversed += line.chars().count();
-        if anchor_offset <= traversed {
-            return index;
+        if let Some(motion) = motion {
+            return Some(if modifiers.shift() {
+                Binding::Select(motion)
+            } else {
+                Binding::Move(motion)
+            });
         }
 
-        if let Some(break_kind) = breaks.get(index) {
-            if *break_kind == ComposerBreak::SoftSpace {
-                traversed += 1;
+        match named {
+            keyboard::key::Named::Enter if !modifiers.shift() => {
+                return Some(Binding::Custom(Message::SubmitComposer));
             }
-        }
-    }
-
-    lines.len().saturating_sub(1)
-}
-
-fn split_soft_wrap(text: &str, limit: f32) -> Option<(String, String, ComposerBreak)> {
-    let mut last_space = None;
-    let mut candidate = String::new();
-
-    for (char_index, ch) in text.chars().enumerate() {
-        candidate.push(ch);
-        if ch.is_whitespace() {
-            last_space = Some(char_index);
-        }
-
-        if measure_text_width(&candidate) > limit {
-            if let Some(space_index) = last_space.filter(|index| *index > 0) {
-                let split_byte = char_to_byte_index(text, space_index);
-                let head = text[..split_byte].trim_end().to_string();
-                let tail = text[split_byte..].trim_start().to_string();
-                if !head.is_empty() && !tail.is_empty() {
-                    return Some((head, tail, ComposerBreak::SoftSpace));
-                }
+            keyboard::key::Named::Backspace if jump_modifier => {
+                return Some(Binding::Sequence(vec![
+                    Binding::Select(Motion::WordLeft),
+                    Binding::Delete,
+                ]));
             }
-
-            let split_byte = char_to_byte_index(text, char_index);
-            let head = text[..split_byte].to_string();
-            let tail = text[split_byte..].to_string();
-            if !head.is_empty() && !tail.is_empty() {
-                return Some((head, tail, ComposerBreak::SoftNone));
+            keyboard::key::Named::Delete if jump_modifier => {
+                return Some(Binding::Sequence(vec![
+                    Binding::Select(Motion::WordRight),
+                    Binding::Delete,
+                ]));
             }
-            return None;
+            keyboard::key::Named::Backspace => return Some(Binding::Backspace),
+            keyboard::key::Named::Delete => return Some(Binding::Delete),
+            keyboard::key::Named::Escape => return Some(Binding::Unfocus),
+            _ => {}
         }
     }
 
-    None
-}
-
-fn measure_text_width(text: &str) -> f32 {
-    type WrapParagraph = cosmic::iced_core::text::paragraph::Plain<
-        <cosmic::Renderer as cosmic::iced_core::text::Renderer>::Paragraph,
-    >;
-
-    let mut paragraph = WrapParagraph::default();
-    paragraph.update(core_text::Text {
-        content: text,
-        bounds: Size::new(f32::MAX, f32::MAX),
-        size: cosmic::iced::Pixels(14.0),
-        line_height: core_text::LineHeight::default(),
-        font: cosmic::font::default(),
-        align_x: core_text::Alignment::Left,
-        align_y: alignment::Vertical::Top,
-        shaping: core_text::Shaping::Advanced,
-        wrapping: core_text::Wrapping::None,
-        ellipsize: core_text::Ellipsize::None,
-    });
-    paragraph.min_width()
-}
-
-fn char_to_byte_index(text: &str, char_index: usize) -> usize {
-    text.char_indices()
-        .nth(char_index)
-        .map(|(byte_index, _)| byte_index)
-        .unwrap_or(text.len())
+    widget::text_editor::Binding::from_key_press(key_press)
 }
 
 fn send_button_class() -> cosmic::theme::Button {
@@ -1799,6 +1577,24 @@ fn composer_container_class() -> cosmic::theme::Container<'static> {
             },
             shadow: Default::default(),
             snap: true,
+        }
+    }))
+}
+
+fn composer_editor_class() -> cosmic::theme::iced::TextEditor<'static> {
+    cosmic::theme::iced::TextEditor::Custom(Box::new(|theme, _status| {
+        let cosmic = theme.cosmic();
+
+        cosmic::iced::widget::text_editor::Style {
+            background: Background::Color(Color::TRANSPARENT),
+            border: cosmic::iced_core::Border {
+                radius: cosmic.corner_radii.radius_0.into(),
+                width: 0.0,
+                color: Color::TRANSPARENT,
+            },
+            placeholder: cosmic.palette.neutral_9.with_alpha(0.7).into(),
+            value: theme.current_container().on.into(),
+            selection: cosmic.accent.base.with_alpha(0.3).into(),
         }
     }))
 }
