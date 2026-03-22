@@ -5,6 +5,7 @@ use futures_util::StreamExt;
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
+use std::time::Duration;
 use tokio::sync::mpsc::UnboundedSender;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -24,9 +25,20 @@ pub struct ProviderMessage {
 
 #[derive(Debug, Clone)]
 pub enum ProviderEvent {
-    Delta { chat_id: u64, delta: String },
-    Finished { chat_id: u64 },
-    Failed { chat_id: u64, error: String },
+    Delta {
+        request_id: u64,
+        chat_id: u64,
+        delta: String,
+    },
+    Finished {
+        request_id: u64,
+        chat_id: u64,
+    },
+    Failed {
+        request_id: u64,
+        chat_id: u64,
+        error: String,
+    },
 }
 
 #[derive(Debug, Serialize)]
@@ -41,7 +53,7 @@ pub fn build_request(
     session_openrouter_key: Option<&str>,
     chat: &ChatSession,
 ) -> Result<ProviderRequest, String> {
-    let model = settings.active_model().trim().to_string();
+    let model = chat.model.trim().to_string();
     if model.is_empty() {
         return Err("Set a model in Provider settings first.".into());
     }
@@ -71,7 +83,7 @@ pub fn build_request(
         return Err("Nothing to send yet.".into());
     }
 
-    let (endpoint, api_key) = match settings.provider {
+    let (endpoint, api_key) = match chat.provider {
         ProviderKind::OpenRouter => {
             let key = session_openrouter_key
                 .map(str::trim)
@@ -87,7 +99,7 @@ pub fn build_request(
     };
 
     Ok(ProviderRequest {
-        provider: settings.provider,
+        provider: chat.provider,
         endpoint,
         api_key,
         model,
@@ -97,22 +109,74 @@ pub fn build_request(
 
 pub async fn stream_chat(
     client: Client,
+    request_id: u64,
     chat_id: u64,
     request: ProviderRequest,
     tx: UnboundedSender<ProviderEvent>,
 ) {
-    match stream_chat_inner(client, chat_id, &request, &tx).await {
+    match stream_chat_inner(client, request_id, chat_id, &request, &tx).await {
         Ok(()) => {
-            let _ = tx.send(ProviderEvent::Finished { chat_id });
+            let _ = tx.send(ProviderEvent::Finished {
+                request_id,
+                chat_id,
+            });
         }
         Err(error) => {
-            let _ = tx.send(ProviderEvent::Failed { chat_id, error });
+            let _ = tx.send(ProviderEvent::Failed {
+                request_id,
+                chat_id,
+                error,
+            });
         }
+    }
+}
+
+pub async fn test_connection(
+    client: Client,
+    provider: ProviderKind,
+    endpoint_or_base_url: String,
+    api_key: Option<String>,
+) -> Result<(), String> {
+    let (endpoint, api_key) = match provider {
+        ProviderKind::OpenRouter => {
+            let api_key = api_key
+                .map(|value| value.trim().to_string())
+                .filter(|value| !value.is_empty())
+                .ok_or_else(|| "OpenRouter API key is missing.".to_string())?;
+
+            (
+                "https://openrouter.ai/api/v1/models".to_string(),
+                Some(api_key),
+            )
+        }
+        ProviderKind::LmStudio => (lmstudio_models_endpoint(&endpoint_or_base_url), None),
+    };
+
+    let mut request = client.get(&endpoint);
+
+    if let Some(api_key) = api_key {
+        request = request.bearer_auth(api_key);
+    }
+
+    let response = tokio::time::timeout(Duration::from_secs(8), request.send())
+        .await
+        .map_err(|_| "Connection failed".to_string())?
+        .map_err(|error| format!("Connection failed: {error}"))?;
+
+    if response.status().is_success() {
+        Ok(())
+    } else {
+        let status = response.status();
+        let body = response.text().await.unwrap_or_default();
+        let message =
+            extract_error_message(&body).unwrap_or_else(|| format!("Connection failed ({status})"));
+        Err(message)
     }
 }
 
 async fn stream_chat_inner(
     client: Client,
+    request_id: u64,
     chat_id: u64,
     request: &ProviderRequest,
     tx: &UnboundedSender<ProviderEvent>,
@@ -162,20 +226,21 @@ async fn stream_chat_inner(
             let event = buffer[..event_end].to_string();
             buffer.drain(..event_end + 2);
 
-            if handle_sse_event(chat_id, &event, tx)? {
+            if handle_sse_event(request_id, chat_id, &event, tx)? {
                 return Ok(());
             }
         }
     }
 
     if !buffer.trim().is_empty() {
-        let _ = handle_sse_event(chat_id, &buffer, tx)?;
+        let _ = handle_sse_event(request_id, chat_id, &buffer, tx)?;
     }
 
     Ok(())
 }
 
 fn handle_sse_event(
+    request_id: u64,
     chat_id: u64,
     event: &str,
     tx: &UnboundedSender<ProviderEvent>,
@@ -211,6 +276,7 @@ fn handle_sse_event(
             .filter(|delta| !delta.is_empty())
         {
             let _ = tx.send(ProviderEvent::Delta {
+                request_id,
                 chat_id,
                 delta: delta.to_string(),
             });
@@ -249,6 +315,17 @@ fn lmstudio_chat_endpoint(base_url: &str) -> String {
         format!("{trimmed}/chat/completions")
     } else {
         format!("{trimmed}/v1/chat/completions")
+    }
+}
+
+fn lmstudio_models_endpoint(base_url: &str) -> String {
+    let trimmed = base_url.trim().trim_end_matches('/');
+    if trimmed.ends_with("/models") {
+        trimmed.to_string()
+    } else if trimmed.ends_with("/v1") {
+        format!("{trimmed}/models")
+    } else {
+        format!("{trimmed}/v1/models")
     }
 }
 
