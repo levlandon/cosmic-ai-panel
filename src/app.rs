@@ -4,6 +4,7 @@ use crate::chat::{AppSettings, ChatMessage, ChatRole, ChatSession, ProviderKind}
 use crate::config::Config;
 use crate::fl;
 use crate::provider::{self, ProviderRequest};
+use crate::secrets;
 use crate::storage::{self, PersistedState};
 use cosmic::app::Core;
 use cosmic::applet::{Size as AppletSize, cosmic_panel_config::PanelAnchor};
@@ -44,6 +45,9 @@ const COMPOSER_SOFT_WRAP_LIMIT: f32 = 300.0;
 const THIN_SCROLLBAR_WIDTH: f32 = 4.0;
 const THIN_SCROLLER_WIDTH: f32 = 3.0;
 const LOADING_TICK_MS: u64 = 120;
+const PANEL_ANIMATION_TICK_MS: u64 = 12;
+const PANEL_ANIMATION_MIN_STEP: f32 = 6.0;
+const PANEL_ANIMATION_FACTOR: f32 = 0.18;
 
 static PROVIDER_EVENTS_RX: OnceLock<Arc<Mutex<UnboundedReceiver<provider::ProviderEvent>>>> =
     OnceLock::new();
@@ -54,6 +58,15 @@ enum PanelView {
     Chat,
     Chats,
     Settings,
+}
+
+#[derive(Debug, Clone, Copy, Default, Eq, PartialEq)]
+enum PanelAnimation {
+    #[default]
+    Closed,
+    Opening,
+    Open,
+    Closing,
 }
 
 #[derive(Debug, Clone, Copy, Default, Eq, PartialEq)]
@@ -79,7 +92,7 @@ impl SettingsForm {
     fn from_settings(settings: &AppSettings) -> Self {
         Self {
             provider_index: settings.provider.index(),
-            openrouter_api_key: String::new(),
+            openrouter_api_key: settings.openrouter_api_key.clone(),
             openrouter_model: settings.openrouter_model.clone(),
             lmstudio_model: settings.lmstudio_model.clone(),
             lmstudio_base_url: settings.lmstudio_base_url.clone(),
@@ -94,6 +107,7 @@ impl SettingsForm {
 
     fn apply_to_settings(&self, settings: &mut AppSettings) {
         settings.provider = self.provider();
+        settings.openrouter_api_key = self.openrouter_api_key.trim().to_string();
         settings.openrouter_model = self.openrouter_model.trim().to_string();
         settings.lmstudio_model = self.lmstudio_model.trim().to_string();
         settings.lmstudio_base_url = self.lmstudio_base_url.trim().to_string();
@@ -169,6 +183,8 @@ pub struct AppModel {
     provider_events_tx: UnboundedSender<provider::ProviderEvent>,
     inflight_request: Option<InflightRequest>,
     chat_error: Option<ChatErrorState>,
+    panel_animation: PanelAnimation,
+    panel_width: f32,
     loading_chat_id: Option<u64>,
     loading_phase: u8,
     status: Option<String>,
@@ -177,6 +193,7 @@ pub struct AppModel {
 /// Messages emitted by the application and its widgets.
 #[derive(Debug, Clone)]
 pub enum Message {
+    AppletPressed,
     TogglePanel,
     PanelClosed(Id),
     EscapePressed(Id),
@@ -201,6 +218,7 @@ pub enum Message {
     ComposerSelectAll(Id),
     SubmitComposer,
     LoadingTick,
+    PanelAnimationTick,
     ProviderEvent(provider::ProviderEvent),
     RetryRequest(u64),
     ProviderSelected(usize),
@@ -237,13 +255,41 @@ impl cosmic::Application for AppModel {
 
     /// Initializes the application with any given flags and startup commands.
     fn init(core: Core, _flags: Self::Flags) -> (Self, Task<cosmic::Action<Self::Message>>) {
-        let state = storage::load_state();
+        let mut state = storage::load_state();
+        let mut status = None;
+
+        match secrets::load_openrouter_api_key() {
+            Ok(Some(api_key)) => {
+                state.settings.openrouter_api_key = api_key;
+            }
+            Ok(None) => {
+                let legacy_key = state.settings.openrouter_api_key.trim().to_string();
+                if !legacy_key.is_empty() {
+                    match secrets::save_openrouter_api_key(&legacy_key) {
+                        Ok(()) => {
+                            state.settings.openrouter_api_key = legacy_key;
+                            if let Err(error) = storage::save_state(&state) {
+                                status = Some(format!("{}: {error}", fl!("status-save-failed")));
+                            }
+                        }
+                        Err(error) => {
+                            status = Some(error);
+                        }
+                    }
+                }
+            }
+            Err(error) => {
+                status = Some(error);
+            }
+        }
+
         let settings_form = SettingsForm::from_settings(&state.settings);
 
         let app = AppModel {
             core,
             state,
             settings_form,
+            status,
             config: cosmic_config::Config::new(Self::APP_ID, Config::VERSION)
                 .map(|context| match Config::get_entry(&context) {
                     Ok(config) => config,
@@ -256,8 +302,8 @@ impl cosmic::Application for AppModel {
         (app, Task::none())
     }
 
-    fn on_close_requested(&self, id: Id) -> Option<Message> {
-        Some(Message::PanelClosed(id))
+    fn on_close_requested(&self, _id: Id) -> Option<Message> {
+        None
     }
 
     /// Describes the interface based on the current state of the application model.
@@ -265,8 +311,8 @@ impl cosmic::Application for AppModel {
     fn view(&self) -> Element<'_, Self::Message> {
         self.core
             .applet
-            .icon_button("display-symbolic")
-            .on_press(Message::TogglePanel)
+            .icon_button("sparkleshare-symbolic")
+            .on_press(Message::AppletPressed)
             .into()
     }
 
@@ -316,10 +362,20 @@ impl cosmic::Application for AppModel {
             .height(Length::Fill)
             .class(cosmic::style::Container::Background);
 
-        column![header, body]
-            .width(Length::Fill)
-            .height(Length::Fill)
-            .into()
+        let panel = column![header, body]
+            .width(Length::Fixed(PANEL_WIDTH))
+            .height(Length::Fill);
+
+        row![
+            container(text("")).width(Length::Fill),
+            container(panel)
+                .width(Length::Fixed(self.panel_width.max(1.0)))
+                .height(Length::Fill)
+                .align_x(alignment::Horizontal::Right)
+        ]
+        .width(Length::Fill)
+        .height(Length::Fill)
+        .into()
     }
 
     /// Register subscriptions for this application.
@@ -368,6 +424,17 @@ impl cosmic::Application for AppModel {
             } else {
                 Subscription::none()
             },
+            if self.panel_window.is_some()
+                && matches!(
+                    self.panel_animation,
+                    PanelAnimation::Opening | PanelAnimation::Closing
+                )
+            {
+                time::every(Duration::from_millis(PANEL_ANIMATION_TICK_MS))
+                    .map(|_| Message::PanelAnimationTick)
+            } else {
+                Subscription::none()
+            },
             provider_events_subscription().map(Message::ProviderEvent),
         ])
     }
@@ -379,6 +446,9 @@ impl cosmic::Application for AppModel {
     /// tasks are finished.
     fn update(&mut self, message: Self::Message) -> Task<cosmic::Action<Self::Message>> {
         match message {
+            Message::AppletPressed => {
+                return self.handle_applet_pressed();
+            }
             Message::UpdateConfig(config) => {
                 self.config = config;
             }
@@ -510,6 +580,9 @@ impl cosmic::Application for AppModel {
             Message::LoadingTick => {
                 self.loading_phase = (self.loading_phase + 1) % 6;
             }
+            Message::PanelAnimationTick => {
+                return self.advance_panel_animation();
+            }
             Message::ProviderEvent(event) => match event {
                 provider::ProviderEvent::Delta { chat_id, delta } => {
                     self.handle_provider_delta(chat_id, delta);
@@ -548,30 +621,25 @@ impl cosmic::Application for AppModel {
             Message::SaveSettings => {
                 self.settings_form
                     .apply_to_settings(&mut self.state.settings);
+                if let Err(error) =
+                    secrets::save_openrouter_api_key(&self.state.settings.openrouter_api_key)
+                {
+                    self.status = Some(error);
+                }
                 self.panel_view = PanelView::Chat;
                 self.persist_state();
             }
             Message::TogglePanel => {
-                return if let Some(id) = self.panel_window.take() {
-                    destroy_layer_surface(id)
+                return if self.panel_window.is_some() {
+                    match self.panel_animation {
+                        PanelAnimation::Closing => self.start_opening_animation(),
+                        PanelAnimation::Open | PanelAnimation::Opening => {
+                            self.start_closing_animation()
+                        }
+                        PanelAnimation::Closed => Task::none(),
+                    }
                 } else {
-                    let id = Id::unique();
-                    self.panel_window = Some(id);
-                    get_layer_surface::<cosmic::Action<Self::Message>>(SctkLayerSurfaceSettings {
-                        id,
-                        layer: Layer::Top,
-                        keyboard_interactivity: KeyboardInteractivity::OnDemand,
-                        anchor: Anchor::RIGHT.union(Anchor::TOP).union(Anchor::BOTTOM),
-                        namespace: Self::APP_ID.to_string(),
-                        margin: panel_reserved_margin(&self.core),
-                        size: Some((Some(PANEL_WIDTH as u32), None)),
-                        // Ignore reserved panel/dock areas so the surface spans full output height.
-                        exclusive_zone: -1,
-                        size_limits: Limits::NONE
-                            .min_width(PANEL_WIDTH)
-                            .min_height(PANEL_MIN_HEIGHT),
-                        ..Default::default()
-                    })
+                    self.open_panel()
                 };
             }
             Message::EscapePressed(id) => {
@@ -580,14 +648,15 @@ impl cosmic::Application for AppModel {
                         self.panel_view = PanelView::Chat;
                         self.composer_focused_line = None;
                     } else {
-                        self.panel_window = None;
-                        return destroy_layer_surface(id);
+                        return self.start_closing_animation();
                     }
                 }
             }
             Message::PanelClosed(id) => {
                 if self.panel_window == Some(id) {
                     self.panel_window = None;
+                    self.panel_animation = PanelAnimation::Closed;
+                    self.panel_width = 0.0;
                 }
             }
         }
@@ -623,6 +692,8 @@ impl AppModel {
             provider_events_tx,
             inflight_request: None,
             chat_error: None,
+            panel_animation: PanelAnimation::Closed,
+            panel_width: 0.0,
             loading_chat_id: None,
             loading_phase: 0,
             status: None,
@@ -803,6 +874,93 @@ impl AppModel {
             .cloned()
     }
 
+    fn open_panel(&mut self) -> Task<cosmic::Action<Message>> {
+        let id = Id::unique();
+        self.panel_window = Some(id);
+        self.panel_animation = PanelAnimation::Opening;
+        self.panel_width = 1.0;
+
+        get_layer_surface::<cosmic::Action<Message>>(SctkLayerSurfaceSettings {
+            id,
+            layer: Layer::Top,
+            keyboard_interactivity: KeyboardInteractivity::OnDemand,
+            anchor: Anchor::RIGHT.union(Anchor::TOP).union(Anchor::BOTTOM),
+            namespace: <Self as cosmic::Application>::APP_ID.to_string(),
+            margin: panel_reserved_margin(&self.core),
+            size: Some((Some(PANEL_WIDTH as u32), None)),
+            exclusive_zone: -1,
+            size_limits: Limits::NONE
+                .min_width(PANEL_WIDTH)
+                .min_height(PANEL_MIN_HEIGHT),
+            ..Default::default()
+        })
+    }
+
+    fn handle_applet_pressed(&mut self) -> Task<cosmic::Action<Message>> {
+        match (self.panel_window, self.panel_animation) {
+            (None, _) => self.open_panel(),
+            (Some(_), PanelAnimation::Closing) => self.start_opening_animation(),
+            (Some(_), PanelAnimation::Opening | PanelAnimation::Open) => {
+                self.start_closing_animation()
+            }
+            (Some(_), PanelAnimation::Closed) => Task::none(),
+        }
+    }
+
+    fn opening_step(&self) -> f32 {
+        let remaining = PANEL_WIDTH - self.panel_width;
+        (remaining * PANEL_ANIMATION_FACTOR).max(PANEL_ANIMATION_MIN_STEP)
+    }
+
+    fn closing_step(&self) -> f32 {
+        (self.panel_width * PANEL_ANIMATION_FACTOR).max(PANEL_ANIMATION_MIN_STEP)
+    }
+
+    fn start_opening_animation(&mut self) -> Task<cosmic::Action<Message>> {
+        self.panel_animation = PanelAnimation::Opening;
+        self.panel_width = (self.panel_width + self.opening_step()).min(PANEL_WIDTH);
+        if self.panel_width >= PANEL_WIDTH {
+            self.panel_animation = PanelAnimation::Open;
+        }
+        Task::none()
+    }
+
+    fn start_closing_animation(&mut self) -> Task<cosmic::Action<Message>> {
+        self.panel_animation = PanelAnimation::Closing;
+        self.panel_width = (self.panel_width - self.closing_step()).max(1.0);
+        Task::none()
+    }
+
+    fn advance_panel_animation(&mut self) -> Task<cosmic::Action<Message>> {
+        let Some(id) = self.panel_window else {
+            self.panel_animation = PanelAnimation::Closed;
+            self.panel_width = 0.0;
+            return Task::none();
+        };
+
+        match self.panel_animation {
+            PanelAnimation::Opening => {
+                self.panel_width = (self.panel_width + self.opening_step()).min(PANEL_WIDTH);
+                if self.panel_width >= PANEL_WIDTH {
+                    self.panel_animation = PanelAnimation::Open;
+                }
+                Task::none()
+            }
+            PanelAnimation::Closing => {
+                self.panel_width = (self.panel_width - self.closing_step()).max(1.0);
+                if self.panel_width <= 1.0 {
+                    self.panel_window = None;
+                    self.panel_animation = PanelAnimation::Closed;
+                    self.panel_width = 0.0;
+                    destroy_layer_surface(id)
+                } else {
+                    Task::none()
+                }
+            }
+            PanelAnimation::Open | PanelAnimation::Closed => Task::none(),
+        }
+    }
+
     fn active_chat(&self) -> Option<&ChatSession> {
         self.state
             .chats
@@ -938,7 +1096,7 @@ impl AppModel {
 
         provider::build_request(
             &self.state.settings,
-            Some(self.settings_form.openrouter_api_key.as_str()),
+            Some(self.state.settings.openrouter_api_key.as_str()),
             chat,
         )
     }

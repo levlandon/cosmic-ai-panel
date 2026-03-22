@@ -5,6 +5,7 @@ mod chat;
 mod config;
 mod i18n;
 mod provider;
+mod secrets;
 mod storage;
 
 fn main() -> cosmic::iced::Result {

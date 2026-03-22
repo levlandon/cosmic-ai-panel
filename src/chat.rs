@@ -96,6 +96,8 @@ impl ChatSession {
 #[serde(default)]
 pub struct AppSettings {
     pub provider: ProviderKind,
+    #[serde(default, skip_serializing)]
+    pub openrouter_api_key: String,
     pub openrouter_model: String,
     pub lmstudio_model: String,
     pub lmstudio_base_url: String,
@@ -116,6 +118,7 @@ impl Default for AppSettings {
     fn default() -> Self {
         Self {
             provider: ProviderKind::OpenRouter,
+            openrouter_api_key: String::new(),
             openrouter_model: String::new(),
             lmstudio_model: String::new(),
             lmstudio_base_url: "http://127.0.0.1:1234/v1".into(),

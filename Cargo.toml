@@ -10,6 +10,7 @@ repository = "https://github.com/pop-os/cosmic-applet-template"
 dirs = "6.0.0"
 futures-util = "0.3.31"
 i18n-embed-fl = "0.10"
+keyring = { version = "3", features = ["sync-secret-service"] }
 reqwest = { version = "0.12.24", default-features = false, features = ["json", "stream", "rustls-tls"] }
 rust-embed = "8.7.2"
 serde = { version = "1.0.228", features = ["derive"] }
