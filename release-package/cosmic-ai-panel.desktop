@@ -1,0 +1,13 @@
+[Desktop Entry]
+Name=Cosmic AI Panel
+Comment=AI assistant panel for COSMIC desktop
+Exec=cosmic-ai-panel %F
+Icon=cosmic-ai-panel
+Type=Application
+Terminal=false
+StartupNotify=true
+Categories=Utility;X-COSMIC;
+Keywords=AI;Assistant;COSMIC;Panel;
+NoDisplay=true
+X-CosmicApplet=true
+X-CosmicHoverPopup=Auto
