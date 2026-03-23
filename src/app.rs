@@ -462,7 +462,7 @@ impl cosmic::Application for AppModel {
         self.core
             .applet
             .icon_button_from_handle(widget::icon::from_svg_bytes(
-                include_bytes!("../resources/icon.svg").as_slice(),
+                include_bytes!("../resources/cosmic-ai-panel.svg").as_slice(),
             ))
             .on_press(Message::AppletPressed)
             .into()

@@ -1,31 +1,41 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <component type="desktop-application">
-  <id>com.levlon.aipanel</id>
+  <id>com.levlandon.cosmic-ai-panel</id>
   <metadata_license>CC0-1.0</metadata_license>
-  <project_license>MPL-2.0</project_license>
-  <name>Cosmic Ai Panel</name>
+  <project_license>MIT</project_license>
+  <name>Cosmic AI Panel</name>
   <summary>AI assistant panel for COSMIC desktop</summary>
-  <icon type="stock">com.levlon.aipanel</icon>
-  <url type="vcs-browser">https://github.com/pop-os/cosmic-applet-template</url>
-  <launchable type="desktop-id">com.levlon.aipanel.desktop</launchable>
-  <provides>
-    <id>com.levlon.aipanel</id>
-    <binaries>
-      <binary>cosmic-ai-panel</binary>
-    </binaries>
-  </provides>
+  <developer id="com.github.levlandon">
+    <name>Lev Landon</name>
+  </developer>
+  <description>
+    <p>
+      Cosmic AI Panel provides a right-side assistant panel for COSMIC with chat history,
+      streaming responses, saved models, and provider settings for OpenRouter or LM Studio.
+    </p>
+  </description>
+  <icon type="stock">cosmic-ai-panel</icon>
+  <url type="homepage">https://github.com/levlandon/cosmic-ai-panel</url>
+  <url type="bugtracker">https://github.com/levlandon/cosmic-ai-panel/issues</url>
+  <url type="vcs-browser">https://github.com/levlandon/cosmic-ai-panel</url>
+  <launchable type="desktop-id">cosmic-ai-panel.desktop</launchable>
+  <releases>
+    <release version="0.1.0" date="2026-03-23" />
+  </releases>
   <requires>
     <display_length compare="ge">360</display_length>
   </requires>
   <supports>
     <control>keyboard</control>
     <control>pointing</control>
-    <control>touch</control>
   </supports>
   <categories>
-    <category>COSMIC</category>
+    <category>Utility</category>
   </categories>
   <keywords>
+    <keyword>AI</keyword>
+    <keyword>Assistant</keyword>
+    <keyword>Chat</keyword>
     <keyword>COSMIC</keyword>
   </keywords>
   <content_rating type="oars-1.1" />

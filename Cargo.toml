@@ -2,9 +2,9 @@
 name = "cosmic-ai-panel"
 version = "0.1.0"
 edition = "2024"
-license = "MPL-2.0"
+license = "MIT"
 description = "AI assistant panel for COSMIC desktop"
-repository = "https://github.com/pop-os/cosmic-applet-template"
+repository = "https://github.com/levlandon/cosmic-ai-panel"
 
 [dependencies]
 dirs = "6.0.0"

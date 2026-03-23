@@ -1,5 +1,7 @@
 name := 'cosmic-ai-panel'
-appid := 'com.levlon.aipanel'
+appid := 'com.levlandon.cosmic-ai-panel'
+desktop-id := 'cosmic-ai-panel'
+icon-name := 'cosmic-ai-panel'
 
 rootdir := ''
 prefix := '/usr'
@@ -9,8 +11,8 @@ base-dir := absolute_path(clean(rootdir / prefix))
 cargo-target-dir := env('CARGO_TARGET_DIR', 'target')
 appdata-dst := base-dir / 'share' / 'appdata' / appid + '.metainfo.xml'
 bin-dst := base-dir / 'bin' / name
-desktop-dst := base-dir / 'share' / 'applications' / appid + '.desktop'
-icon-dst := base-dir / 'share' / 'icons' / 'hicolor' / 'scalable' / 'apps' / appid + '.svg'
+desktop-dst := base-dir / 'share' / 'applications' / desktop-id + '.desktop'
+icon-dst := base-dir / 'share' / 'icons' / 'hicolor' / 'scalable' / 'apps' / icon-name + '.svg'
 
 # Default recipe which runs `just build-release`
 default: build-release
@@ -50,9 +52,9 @@ run *args:
 # Installs files
 install:
     install -Dm0755 {{ cargo-target-dir / 'release' / name }} {{bin-dst}}
-    install -Dm0644 resources/app.desktop {{desktop-dst}}
+    install -Dm0644 resources/cosmic-ai-panel.desktop {{desktop-dst}}
     install -Dm0644 resources/app.metainfo.xml {{appdata-dst}}
-    install -Dm0644 resources/icon.svg {{icon-dst}}
+    install -Dm0644 resources/cosmic-ai-panel.svg {{icon-dst}}
 
 # Uninstalls installed files
 uninstall:
@@ -79,4 +81,3 @@ tag version:
     git add Cargo.lock
     git commit -m 'release: {{version}}'
     git tag -a {{version}} -m ''
-
