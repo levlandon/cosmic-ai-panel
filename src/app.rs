@@ -5,7 +5,7 @@ use crate::config::Config;
 use crate::fl;
 use crate::provider::{self, ProviderRequest};
 use crate::secrets;
-use crate::storage::{self, PersistedState};
+use crate::storage::{self, AppState};
 use cosmic::app::Core;
 use cosmic::applet::{Size as AppletSize, cosmic_panel_config::PanelAnchor};
 use cosmic::cosmic_config::{self, CosmicConfigEntry};
@@ -270,7 +270,7 @@ pub struct AppModel {
     panel_requested_open: bool,
     config: Config,
     panel_view: PanelView,
-    state: PersistedState,
+    state: AppState,
     composer_content: widget::text_editor::Content,
     composer_editor_id: widget::Id,
     editing_message_id: Option<u64>,
@@ -461,7 +461,9 @@ impl cosmic::Application for AppModel {
     fn view(&self) -> Element<'_, Self::Message> {
         self.core
             .applet
-            .icon_button("sparkleshare-symbolic")
+            .icon_button_from_handle(widget::icon::from_svg_bytes(
+                include_bytes!("../resources/icon.svg").as_slice(),
+            ))
             .on_press(Message::AppletPressed)
             .into()
     }
@@ -923,7 +925,7 @@ impl AppModel {
             panel_requested_open: false,
             config: Config::default(),
             panel_view: PanelView::Chat,
-            state: PersistedState::default(),
+            state: AppState::default(),
             composer_content: widget::text_editor::Content::new(),
             composer_editor_id: widget::Id::unique(),
             editing_message_id: None,
@@ -1119,6 +1121,14 @@ impl AppModel {
             .iter()
             .find(|message| message.id == message_id)
             .map(|message| message.content.clone())
+    }
+
+    fn should_show_empty_chat_placeholder(&self, chat: &ChatSession) -> bool {
+        self.loading_chat_id != Some(chat.id)
+            && !chat
+                .messages
+                .iter()
+                .any(|message| matches!(message.role, ChatRole::User | ChatRole::Assistant))
     }
 
     fn last_assistant_message_id(&self, chat_id: u64) -> Option<u64> {
@@ -1960,10 +1970,6 @@ impl AppModel {
         }
 
         let source_chat_id = self.state.active_chat_id;
-        if self.last_assistant_message_id(source_chat_id) != Some(message_id) {
-            return Task::none();
-        }
-
         let Some(source_chat) = self
             .state
             .chats
@@ -1974,13 +1980,17 @@ impl AppModel {
             return Task::none();
         };
 
-        let Some(branch_end) = source_chat
+        let Some((branch_end, branch_message)) = source_chat
             .messages
             .iter()
-            .position(|message| message.id == message_id)
+            .enumerate()
+            .find(|(_, message)| message.id == message_id)
         else {
             return Task::none();
         };
+        if branch_message.role != ChatRole::Assistant {
+            return Task::none();
+        }
 
         let new_chat_id = self.state.next_chat_id;
         self.state.next_chat_id += 1;
@@ -2440,8 +2450,6 @@ impl AppModel {
     }
 
     fn message_column(&self) -> Element<'_, Message> {
-        let spacing = cosmic::theme::spacing();
-
         let Some(chat) = self.active_chat() else {
             return container(text(""))
                 .width(Length::Fill)
@@ -2449,15 +2457,11 @@ impl AppModel {
                 .into();
         };
 
-        if chat.messages.is_empty() {
-            if self.loading_chat_id != Some(chat.id) {
-                return container(text(""))
-                    .width(Length::Fill)
-                    .height(Length::Fill)
-                    .into();
-            }
+        if self.should_show_empty_chat_placeholder(chat) {
+            return self.empty_chat_placeholder();
         }
 
+        let spacing = cosmic::theme::spacing();
         let mut messages = widget::column()
             .spacing(spacing.space_m)
             .width(Length::Fill);
@@ -2478,6 +2482,17 @@ impl AppModel {
         }
 
         messages.into()
+    }
+
+    fn empty_chat_placeholder(&self) -> Element<'_, Message> {
+        container(widget::text::heading("What can I help you with?").class(
+            cosmic::theme::Text::Color(Color::from_rgba(1.0, 1.0, 1.0, 0.44)),
+        ))
+        .width(Length::Fill)
+        .height(Length::Fill)
+        .align_x(alignment::Horizontal::Center)
+        .align_y(Alignment::Center)
+        .into()
     }
 
     fn message_card<'a>(&'a self, message: &'a ChatMessage) -> Element<'a, Message> {
@@ -2700,16 +2715,17 @@ impl AppModel {
                     false,
                 )];
 
+                buttons.push(self.message_action_button(
+                    "object-merge-symbolic",
+                    (!actions_locked).then_some(Message::BranchConversation(message.id)),
+                    true,
+                    false,
+                ));
+
                 if is_last_assistant && !actions_locked {
                     buttons.push(self.message_action_button(
                         "view-refresh-symbolic",
                         Some(Message::RegenerateLastAssistant(message.id)),
-                        true,
-                        false,
-                    ));
-                    buttons.push(self.message_action_button(
-                        "object-merge-symbolic",
-                        Some(Message::BranchConversation(message.id)),
                         true,
                         false,
                     ));

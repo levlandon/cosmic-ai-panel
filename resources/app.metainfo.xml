@@ -5,9 +5,7 @@
   <project_license>MPL-2.0</project_license>
   <name>Cosmic Ai Panel</name>
   <summary>AI assistant panel for COSMIC desktop</summary>
-  <icon type="remote" width="64" height="64" scale="1">
-    https://github.com/pop-os/cosmic-applet-template/raw/main/resources/icon.svg
-  </icon>
+  <icon type="stock">com.levlon.aipanel</icon>
   <url type="vcs-browser">https://github.com/pop-os/cosmic-applet-template</url>
   <launchable type="desktop-id">com.levlon.aipanel.desktop</launchable>
   <provides>

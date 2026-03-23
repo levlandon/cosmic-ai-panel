@@ -8,6 +8,11 @@ use serde_json::Value;
 use std::time::Duration;
 use tokio::sync::mpsc::UnboundedSender;
 
+const STREAM_START_TIMEOUT: Duration = Duration::from_secs(8);
+const EMPTY_RESPONSE_ERROR: &str = "Empty response from provider";
+const PROVIDER_TIMEOUT_ERROR: &str = "Provider timeout";
+const MALFORMED_RESPONSE_ERROR: &str = "Malformed response from provider";
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ProviderRequest {
     pub provider: ProviderKind,
@@ -202,9 +207,14 @@ async fn stream_chat_inner(
             .header("X-Title", "Cosmic AI Panel");
     }
 
-    let response = builder
-        .send()
+    let response = tokio::time::timeout(STREAM_START_TIMEOUT, builder.send())
         .await
+        .map_err(|_| {
+            log_provider_warning(format!(
+                "stream start timeout while waiting for response headers (chat_id={chat_id}, request_id={request_id})"
+            ));
+            PROVIDER_TIMEOUT_ERROR.to_string()
+        })?
         .map_err(|error| format!("Request failed: {error}"))?;
 
     if !response.status().is_success() {
@@ -217,26 +227,86 @@ async fn stream_chat_inner(
 
     let mut stream = response.bytes_stream();
     let mut buffer = String::new();
+    let mut has_assistant_text = false;
+
+    match tokio::time::timeout(STREAM_START_TIMEOUT, stream.next()).await {
+        Ok(Some(chunk)) => {
+            let chunk = chunk.map_err(|error| format!("Stream error: {error}"))?;
+            buffer.push_str(&String::from_utf8_lossy(&chunk));
+
+            if process_stream_buffer(
+                request_id,
+                chat_id,
+                &mut buffer,
+                tx,
+                &mut has_assistant_text,
+            )? {
+                return finish_stream(has_assistant_text);
+            }
+        }
+        Ok(None) => {
+            return Err(EMPTY_RESPONSE_ERROR.into());
+        }
+        Err(_) => {
+            log_provider_warning(format!(
+                "stream start timeout while waiting for first chunk (chat_id={chat_id}, request_id={request_id})"
+            ));
+            return Err(PROVIDER_TIMEOUT_ERROR.into());
+        }
+    }
 
     while let Some(chunk) = stream.next().await {
         let chunk = chunk.map_err(|error| format!("Stream error: {error}"))?;
         buffer.push_str(&String::from_utf8_lossy(&chunk));
 
-        while let Some(event_end) = buffer.find("\n\n") {
-            let event = buffer[..event_end].to_string();
-            buffer.drain(..event_end + 2);
-
-            if handle_sse_event(request_id, chat_id, &event, tx)? {
-                return Ok(());
-            }
+        if process_stream_buffer(
+            request_id,
+            chat_id,
+            &mut buffer,
+            tx,
+            &mut has_assistant_text,
+        )? {
+            return finish_stream(has_assistant_text);
         }
     }
 
     if !buffer.trim().is_empty() {
-        let _ = handle_sse_event(request_id, chat_id, &buffer, tx)?;
+        let outcome = handle_sse_event(request_id, chat_id, &buffer, tx, !has_assistant_text)?;
+        if outcome.emitted_text {
+            has_assistant_text = true;
+        }
     }
 
-    Ok(())
+    finish_stream(has_assistant_text)
+}
+
+#[derive(Debug, Default, Clone, Copy)]
+struct SseEventOutcome {
+    finished: bool,
+    emitted_text: bool,
+}
+
+fn process_stream_buffer(
+    request_id: u64,
+    chat_id: u64,
+    buffer: &mut String,
+    tx: &UnboundedSender<ProviderEvent>,
+    has_assistant_text: &mut bool,
+) -> Result<bool, String> {
+    while let Some((event_end, delimiter_len)) = find_event_boundary(buffer) {
+        let event = buffer[..event_end].to_string();
+        buffer.drain(..event_end + delimiter_len);
+
+        let outcome = handle_sse_event(request_id, chat_id, &event, tx, !*has_assistant_text)?;
+        if outcome.emitted_text {
+            *has_assistant_text = true;
+        }
+        if outcome.finished {
+            return Ok(true);
+        }
+    }
+
+    Ok(false)
 }
 
 fn handle_sse_event(
@@ -244,23 +314,23 @@ fn handle_sse_event(
     chat_id: u64,
     event: &str,
     tx: &UnboundedSender<ProviderEvent>,
-) -> Result<bool, String> {
-    for line in event.lines() {
-        let line = line.trim();
-        if !line.starts_with("data:") {
-            continue;
-        }
+    allow_message_fallback: bool,
+) -> Result<SseEventOutcome, String> {
+    let payloads = event_payloads(event);
+    let mut outcome = SseEventOutcome::default();
 
-        let payload = line.trim_start_matches("data:").trim();
-        if payload.is_empty() {
-            continue;
-        }
+    for payload in payloads {
         if payload == "[DONE]" {
-            return Ok(true);
+            outcome.finished = true;
+            break;
         }
 
-        let value: Value = serde_json::from_str(payload)
-            .map_err(|error| format!("Invalid stream event: {error}"))?;
+        let value: Value = serde_json::from_str(&payload).map_err(|error| {
+            log_provider_warning(format!(
+                "malformed stream payload (chat_id={chat_id}, request_id={request_id}): {error}; payload={payload}"
+            ));
+            MALFORMED_RESPONSE_ERROR.to_string()
+        })?;
 
         if let Some(error_message) = value
             .get("error")
@@ -270,20 +340,89 @@ fn handle_sse_event(
             return Err(error_message.to_string());
         }
 
-        if let Some(delta) = value
-            .pointer("/choices/0/delta/content")
-            .and_then(Value::as_str)
-            .filter(|delta| !delta.is_empty())
+        if let Some(content) =
+            extract_stream_text(&value, allow_message_fallback && !outcome.emitted_text)
         {
             let _ = tx.send(ProviderEvent::Delta {
                 request_id,
                 chat_id,
-                delta: delta.to_string(),
+                delta: content,
             });
+            outcome.emitted_text = true;
         }
     }
 
-    Ok(false)
+    Ok(outcome)
+}
+
+fn extract_stream_text(value: &Value, allow_message_fallback: bool) -> Option<String> {
+    if let Some(content) = extract_string(value.pointer("/choices/0/delta/content")) {
+        return Some(content);
+    }
+
+    if allow_message_fallback {
+        if let Some(content) = extract_string(value.pointer("/choices/0/message/content")) {
+            return Some(content);
+        }
+    }
+
+    None
+}
+
+fn extract_string(value: Option<&Value>) -> Option<String> {
+    value.and_then(Value::as_str).and_then(|content| {
+        if content.is_empty() {
+            None
+        } else {
+            Some(content.to_string())
+        }
+    })
+}
+
+fn event_payloads(event: &str) -> Vec<String> {
+    let data_lines: Vec<String> = event
+        .lines()
+        .filter_map(|line| {
+            let line = line.strip_suffix('\r').unwrap_or(line);
+            let payload = line.strip_prefix("data:")?;
+            Some(payload.strip_prefix(' ').unwrap_or(payload).to_string())
+        })
+        .filter(|payload| !payload.is_empty())
+        .collect();
+
+    if !data_lines.is_empty() {
+        return vec![data_lines.join("\n")];
+    }
+
+    let trimmed = event.trim();
+    if trimmed.starts_with('{') || trimmed.starts_with('[') {
+        return vec![trimmed.to_string()];
+    }
+
+    Vec::new()
+}
+
+fn find_event_boundary(buffer: &str) -> Option<(usize, usize)> {
+    let lf_boundary = buffer.find("\n\n").map(|index| (index, 2));
+    let crlf_boundary = buffer.find("\r\n\r\n").map(|index| (index, 4));
+
+    match (lf_boundary, crlf_boundary) {
+        (Some(left), Some(right)) => Some(if left.0 <= right.0 { left } else { right }),
+        (Some(boundary), None) | (None, Some(boundary)) => Some(boundary),
+        (None, None) => None,
+    }
+}
+
+fn finish_stream(has_assistant_text: bool) -> Result<(), String> {
+    if has_assistant_text {
+        Ok(())
+    } else {
+        Err(EMPTY_RESPONSE_ERROR.into())
+    }
+}
+
+fn log_provider_warning(message: impl AsRef<str>) {
+    eprintln!("[cosmic-ai-panel][provider][warn] {}", message.as_ref());
 }
 
 fn extract_error_message(body: &str) -> Option<String> {
@@ -334,5 +473,98 @@ fn role_name(role: ChatRole) -> &'static str {
         ChatRole::System => "system",
         ChatRole::User => "user",
         ChatRole::Assistant => "assistant",
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{ProviderEvent, extract_stream_text, handle_sse_event};
+    use serde_json::json;
+    use tokio::sync::mpsc::unbounded_channel;
+
+    #[test]
+    fn extract_stream_text_uses_message_fallback() {
+        let payload = json!({
+            "choices": [{
+                "message": {
+                    "content": "hello from fallback"
+                }
+            }]
+        });
+
+        assert_eq!(
+            extract_stream_text(&payload, true),
+            Some("hello from fallback".to_string())
+        );
+    }
+
+    #[test]
+    fn extract_stream_text_preserves_whitespace() {
+        let payload = json!({
+            "choices": [{
+                "delta": {
+                    "content": " hello\nworld "
+                }
+            }]
+        });
+
+        assert_eq!(
+            extract_stream_text(&payload, false),
+            Some(" hello\nworld ".to_string())
+        );
+    }
+
+    #[test]
+    fn handle_sse_event_accepts_raw_json_payload() {
+        let (tx, mut rx) = unbounded_channel();
+        let raw_json = r#"{"choices":[{"message":{"content":"raw-json"}}]}"#;
+
+        let outcome = handle_sse_event(7, 9, raw_json, &tx, true).unwrap();
+
+        assert!(outcome.emitted_text);
+        assert!(!outcome.finished);
+        match rx.try_recv().unwrap() {
+            ProviderEvent::Delta {
+                request_id,
+                chat_id,
+                delta,
+            } => {
+                assert_eq!(request_id, 7);
+                assert_eq!(chat_id, 9);
+                assert_eq!(delta, "raw-json");
+            }
+            other => panic!("unexpected provider event: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn handle_sse_event_preserves_space_only_delta() {
+        let (tx, mut rx) = unbounded_channel();
+        let raw_json = r#"data: {"choices":[{"delta":{"content":" "}}]}"#;
+
+        let outcome = handle_sse_event(7, 9, raw_json, &tx, false).unwrap();
+
+        assert!(outcome.emitted_text);
+        assert!(!outcome.finished);
+        match rx.try_recv().unwrap() {
+            ProviderEvent::Delta {
+                request_id,
+                chat_id,
+                delta,
+            } => {
+                assert_eq!(request_id, 7);
+                assert_eq!(chat_id, 9);
+                assert_eq!(delta, " ");
+            }
+            other => panic!("unexpected provider event: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn handle_sse_event_rejects_malformed_json() {
+        let (tx, _rx) = unbounded_channel();
+        let error = handle_sse_event(1, 2, "data: {not-json}", &tx, true).unwrap_err();
+
+        assert_eq!(error, "Malformed response from provider");
     }
 }
