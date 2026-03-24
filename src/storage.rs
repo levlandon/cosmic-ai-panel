@@ -726,6 +726,7 @@ mod tests {
                 name: Some("Lev".into()),
                 language: None,
                 response_style: None,
+                ..UserProfile::default()
             },
             memory: vec!["User uses COSMIC desktop".into()],
             skills: SkillsSettings::default(),

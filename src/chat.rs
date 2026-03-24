@@ -257,23 +257,68 @@ impl Default for ProviderSettings {
     }
 }
 
+#[derive(Debug, Clone, Copy, Default, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum PreferenceLevel {
+    More,
+    #[default]
+    Default,
+    Less,
+}
+
+impl PreferenceLevel {
+    pub const ALL: [Self; 3] = [Self::More, Self::Default, Self::Less];
+
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::More => "More",
+            Self::Default => "Default",
+            Self::Less => "Less",
+        }
+    }
+
+    pub fn from_index(index: usize) -> Self {
+        Self::ALL.get(index).copied().unwrap_or_default()
+    }
+
+    pub fn index(self) -> usize {
+        match self {
+            Self::More => 0,
+            Self::Default => 1,
+            Self::Less => 2,
+        }
+    }
+}
+
 #[derive(Debug, Clone, Default, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct UserProfile {
     pub name: Option<String>,
     pub language: Option<String>,
+    pub occupation: Option<String>,
     pub response_style: Option<String>,
+    pub more_about_you: Option<String>,
+    pub header_lists: PreferenceLevel,
+    pub emoji: PreferenceLevel,
 }
 
 impl UserProfile {
     pub fn normalize(&mut self) {
         self.name = normalize_optional_field(self.name.take());
         self.language = normalize_optional_field(self.language.take());
+        self.occupation = normalize_optional_field(self.occupation.take());
         self.response_style = normalize_optional_field(self.response_style.take());
+        self.more_about_you = normalize_optional_field(self.more_about_you.take());
     }
 
     pub fn is_empty(&self) -> bool {
-        self.name.is_none() && self.language.is_none() && self.response_style.is_none()
+        self.name.is_none()
+            && self.language.is_none()
+            && self.occupation.is_none()
+            && self.response_style.is_none()
+            && self.more_about_you.is_none()
+            && self.header_lists == PreferenceLevel::Default
+            && self.emoji == PreferenceLevel::Default
     }
 }
 

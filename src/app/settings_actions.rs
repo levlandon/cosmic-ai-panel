@@ -1,6 +1,7 @@
 //! Settings tabs, personalization, model list, and connection test flows.
 
 use super::*;
+use crate::personalization;
 
 impl AppModel {
     pub(in crate::app) fn open_settings(&mut self) {
@@ -10,6 +11,7 @@ impl AppModel {
 
     pub(in crate::app) fn close_settings(&mut self) -> Task<cosmic::Action<Message>> {
         self.settings_ui.modal = None;
+        self.settings_ui.modal_error = None;
         self.panel_view = PanelView::Chat;
         self.scroll_messages_to_end(true)
     }
@@ -62,8 +64,9 @@ impl AppModel {
         self.settings_ui.form.profile_language = value;
     }
 
-    pub(in crate::app) fn set_response_style(&mut self, value: String) {
-        self.settings_ui.form.response_style = value;
+    pub(in crate::app) fn edit_profile_occupation(&mut self, action: widget::text_editor::Action) {
+        self.settings_ui.occupation_content.perform(action);
+        self.settings_ui.form.profile_occupation = self.settings_ui.occupation_content.text();
     }
 
     pub(in crate::app) fn add_memory_item(&mut self) {
@@ -92,8 +95,22 @@ impl AppModel {
 
     pub(in crate::app) fn reset_personalization(&mut self) {
         self.settings_ui.form.reset_personalization();
-        self.settings_ui.system_prompt_content =
-            widget::text_editor::Content::with_text(&self.settings_ui.form.base_system_prompt);
+        self.settings_ui.sync_personalization_editors();
+        let base_system_prompt = self.settings_ui.form.base_system_prompt.clone();
+        self.settings_ui.set_modal_editor_text(&base_system_prompt);
+        self.settings_ui.modal_error = None;
+    }
+
+    pub(in crate::app) fn select_header_lists(&mut self, index: usize) {
+        self.settings_ui.form.select_header_lists(index);
+    }
+
+    pub(in crate::app) fn select_emoji(&mut self, index: usize) {
+        self.settings_ui.form.select_emoji(index);
+    }
+
+    pub(in crate::app) fn select_prompt_preview_mode(&mut self, mode: PromptPreviewMode) {
+        self.settings_ui.preview_mode = mode;
     }
 
     pub(in crate::app) fn select_default_model(&mut self, index: usize) {
@@ -127,6 +144,7 @@ impl AppModel {
 
     pub(in crate::app) fn close_settings_modal(&mut self) {
         self.settings_ui.modal = None;
+        self.settings_ui.modal_error = None;
     }
 
     pub(in crate::app) fn select_add_model_provider(&mut self, index: usize) {
@@ -152,18 +170,115 @@ impl AppModel {
     }
 
     pub(in crate::app) fn open_system_prompt_modal(&mut self) {
-        self.settings_ui.system_prompt_content =
-            widget::text_editor::Content::with_text(&self.settings_ui.form.base_system_prompt);
-        self.settings_ui.modal = Some(SettingsModal::SystemPrompt);
+        self.open_text_editor_modal(TextEditorModal::BaseSystemPrompt);
     }
 
-    pub(in crate::app) fn edit_system_prompt(&mut self, action: widget::text_editor::Action) {
-        self.settings_ui.system_prompt_content.perform(action);
+    pub(in crate::app) fn open_response_style_modal(&mut self) {
+        self.open_text_editor_modal(TextEditorModal::ResponseStyle);
     }
 
-    pub(in crate::app) fn save_system_prompt(&mut self) {
-        self.settings_ui.form.base_system_prompt = self.settings_ui.system_prompt_content.text();
-        self.settings_ui.modal = None;
+    pub(in crate::app) fn open_more_about_you_modal(&mut self) {
+        self.open_text_editor_modal(TextEditorModal::MoreAboutYou);
+    }
+
+    pub(in crate::app) fn open_import_personalization_modal(&mut self) {
+        self.open_text_editor_modal(TextEditorModal::ImportPersonalization);
+    }
+
+    pub(in crate::app) fn open_export_personalization_modal(&mut self) {
+        self.open_text_editor_modal(TextEditorModal::ExportPersonalization);
+    }
+
+    pub(in crate::app) fn open_prompt_preview_modal(&mut self) {
+        self.settings_ui.preview_mode = PromptPreviewMode::Code;
+        self.settings_ui.modal = Some(SettingsModal::PromptPreview);
+        self.settings_ui.modal_error = None;
+    }
+
+    pub(in crate::app) fn edit_settings_modal(&mut self, action: widget::text_editor::Action) {
+        if matches!(
+            self.settings_ui.modal,
+            Some(SettingsModal::Editor(
+                TextEditorModal::ExportPersonalization
+            ))
+        ) {
+            return;
+        }
+
+        self.settings_ui.modal_editor_content.perform(action);
+        self.settings_ui.modal_error = None;
+    }
+
+    pub(in crate::app) fn save_settings_modal(&mut self) {
+        let Some(SettingsModal::Editor(kind)) = self.settings_ui.modal else {
+            return;
+        };
+
+        match kind {
+            TextEditorModal::BaseSystemPrompt => {
+                self.settings_ui.form.base_system_prompt =
+                    self.settings_ui.modal_editor_content.text();
+                self.settings_ui.modal = None;
+            }
+            TextEditorModal::ResponseStyle => {
+                self.settings_ui.form.response_style = self.settings_ui.modal_editor_content.text();
+                self.settings_ui.modal = None;
+            }
+            TextEditorModal::MoreAboutYou => {
+                self.settings_ui.form.more_about_you = self.settings_ui.modal_editor_content.text();
+                self.settings_ui.modal = None;
+            }
+            TextEditorModal::ImportPersonalization => {
+                match personalization::import_personalization(
+                    &self.settings_ui.modal_editor_content.text(),
+                ) {
+                    Ok(imported) => {
+                        self.settings_ui.form.apply_personalization(&imported);
+                        self.settings_ui.sync_personalization_editors();
+                        self.settings_ui.modal = None;
+                        self.settings_ui.modal_error = None;
+                    }
+                    Err(error) => {
+                        self.settings_ui.modal_error = Some(error);
+                    }
+                }
+            }
+            TextEditorModal::ExportPersonalization => {}
+        }
+    }
+
+    pub(in crate::app) fn copy_exported_personalization(
+        &mut self,
+    ) -> Task<cosmic::Action<Message>> {
+        self.copy_to_clipboard(
+            CopiedTarget::SettingsExport,
+            self.settings_ui.modal_editor_content.text(),
+        )
+    }
+
+    fn open_text_editor_modal(&mut self, kind: TextEditorModal) {
+        let mut modal_error = None;
+        let content = match kind {
+            TextEditorModal::BaseSystemPrompt => self.settings_ui.form.base_system_prompt.clone(),
+            TextEditorModal::ResponseStyle => self.settings_ui.form.response_style.clone(),
+            TextEditorModal::MoreAboutYou => self.settings_ui.form.more_about_you.clone(),
+            TextEditorModal::ImportPersonalization => String::new(),
+            TextEditorModal::ExportPersonalization => {
+                match personalization::export_personalization(
+                    &self.settings_ui.form.personalization_settings(),
+                ) {
+                    Ok(content) => content,
+                    Err(error) => {
+                        modal_error = Some(error);
+                        String::new()
+                    }
+                }
+            }
+        };
+
+        self.settings_ui.set_modal_editor_text(&content);
+        self.settings_ui.modal = Some(SettingsModal::Editor(kind));
+        self.settings_ui.modal_error = modal_error;
     }
 
     pub(in crate::app) fn test_connection(&mut self) -> Task<cosmic::Action<Message>> {

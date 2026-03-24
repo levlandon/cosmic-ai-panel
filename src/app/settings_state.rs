@@ -1,8 +1,11 @@
 //! Settings-related form state, tabs, validation, and modal UI state.
 
 use super::*;
+use crate::chat::{PreferenceLevel, UserProfile};
+use crate::personalization::PersonalizationSettings;
 
 const SETTINGS_PROVIDER_OPTIONS: [&str; 2] = ["OpenRouter", "LM Studio"];
+const PREFERENCE_LEVEL_OPTIONS: [&str; 3] = ["More", "Default", "Less"];
 
 #[derive(Debug, Clone, Copy, Default, Eq, PartialEq)]
 pub(crate) enum SettingsTab {
@@ -35,7 +38,61 @@ pub(in crate::app) enum SettingsValidationError {
 #[derive(Debug, Clone, Copy, Eq, PartialEq)]
 pub(in crate::app) enum SettingsModal {
     AddModel,
-    SystemPrompt,
+    Editor(TextEditorModal),
+    PromptPreview,
+}
+
+#[derive(Debug, Clone, Copy, Eq, PartialEq)]
+pub(in crate::app) enum TextEditorModal {
+    BaseSystemPrompt,
+    ResponseStyle,
+    MoreAboutYou,
+    ImportPersonalization,
+    ExportPersonalization,
+}
+
+impl TextEditorModal {
+    pub(in crate::app) fn title(self) -> &'static str {
+        match self {
+            Self::BaseSystemPrompt => "Edit base system prompt",
+            Self::ResponseStyle => "Edit response style",
+            Self::MoreAboutYou => "Edit more about you",
+            Self::ImportPersonalization => "Import personalization",
+            Self::ExportPersonalization => "Export personalization",
+        }
+    }
+
+    pub(in crate::app) fn action_label(self) -> Option<&'static str> {
+        match self {
+            Self::BaseSystemPrompt => Some("Save"),
+            Self::ResponseStyle => Some("Save"),
+            Self::MoreAboutYou => Some("Save"),
+            Self::ImportPersonalization => Some("Import"),
+            Self::ExportPersonalization => None,
+        }
+    }
+
+    pub(in crate::app) fn is_read_only(self) -> bool {
+        matches!(self, Self::ExportPersonalization)
+    }
+}
+
+#[derive(Debug, Clone, Copy, Default, Eq, PartialEq)]
+pub(crate) enum PromptPreviewMode {
+    #[default]
+    Code,
+    Text,
+}
+
+impl PromptPreviewMode {
+    pub(in crate::app) const ALL: [Self; 2] = [Self::Code, Self::Text];
+
+    pub(in crate::app) fn label(self) -> &'static str {
+        match self {
+            Self::Code => "Code",
+            Self::Text => "Text",
+        }
+    }
 }
 
 #[derive(Debug, Clone, Default)]
@@ -61,7 +118,11 @@ pub(in crate::app) struct SettingsForm {
     pub(in crate::app) context_message_limit: String,
     pub(in crate::app) profile_name: String,
     pub(in crate::app) profile_language: String,
+    pub(in crate::app) profile_occupation: String,
     pub(in crate::app) response_style: String,
+    pub(in crate::app) more_about_you: String,
+    pub(in crate::app) header_lists_index: usize,
+    pub(in crate::app) emoji_index: usize,
     pub(in crate::app) memory_items: Vec<String>,
     pub(in crate::app) skill_datetime: bool,
     pub(in crate::app) skill_clipboard: bool,
@@ -83,7 +144,11 @@ impl SettingsForm {
             context_message_limit: settings.context_message_limit.to_string(),
             profile_name: settings.profile.name.clone().unwrap_or_default(),
             profile_language: settings.profile.language.clone().unwrap_or_default(),
+            profile_occupation: settings.profile.occupation.clone().unwrap_or_default(),
             response_style: settings.profile.response_style.clone().unwrap_or_default(),
+            more_about_you: settings.profile.more_about_you.clone().unwrap_or_default(),
+            header_lists_index: settings.profile.header_lists.index(),
+            emoji_index: settings.profile.emoji.index(),
             memory_items: settings.memory.clone(),
             skill_datetime: settings.skills.datetime,
             skill_clipboard: settings.skills.clipboard,
@@ -97,6 +162,10 @@ impl SettingsForm {
 
     pub(in crate::app) fn provider_labels() -> &'static [&'static str; 2] {
         &SETTINGS_PROVIDER_OPTIONS
+    }
+
+    pub(in crate::app) fn preference_labels() -> &'static [&'static str; 3] {
+        &PREFERENCE_LEVEL_OPTIONS
     }
 
     pub(in crate::app) fn default_model_options(&self) -> Vec<String> {
@@ -187,13 +256,78 @@ impl SettingsForm {
         }
     }
 
+    pub(in crate::app) fn select_header_lists(&mut self, index: usize) {
+        self.header_lists_index = PreferenceLevel::from_index(index).index();
+    }
+
+    pub(in crate::app) fn select_emoji(&mut self, index: usize) {
+        self.emoji_index = PreferenceLevel::from_index(index).index();
+    }
+
+    pub(in crate::app) fn header_lists(&self) -> PreferenceLevel {
+        PreferenceLevel::from_index(self.header_lists_index)
+    }
+
+    pub(in crate::app) fn emoji(&self) -> PreferenceLevel {
+        PreferenceLevel::from_index(self.emoji_index)
+    }
+
     pub(in crate::app) fn reset_personalization(&mut self) {
         let defaults = AppSettings::default();
         self.base_system_prompt = defaults.base_system_prompt;
         self.profile_name.clear();
         self.profile_language.clear();
+        self.profile_occupation.clear();
         self.response_style.clear();
+        self.more_about_you.clear();
+        self.header_lists_index = PreferenceLevel::Default.index();
+        self.emoji_index = PreferenceLevel::Default.index();
         self.memory_items.clear();
+    }
+
+    pub(in crate::app) fn personalization_settings(&self) -> PersonalizationSettings {
+        let mut settings = PersonalizationSettings {
+            base_system_prompt: self.base_system_prompt.clone(),
+            profile: UserProfile {
+                name: normalize_form_field(&self.profile_name),
+                language: normalize_form_field(&self.profile_language),
+                occupation: normalize_form_field(&self.profile_occupation),
+                response_style: normalize_form_field(&self.response_style),
+                more_about_you: normalize_form_field(&self.more_about_you),
+                header_lists: self.header_lists(),
+                emoji: self.emoji(),
+            },
+            memory: self.memory_items.clone(),
+        };
+        settings.normalize();
+        settings
+    }
+
+    pub(in crate::app) fn apply_personalization(
+        &mut self,
+        personalization: &PersonalizationSettings,
+    ) {
+        self.base_system_prompt = personalization.base_system_prompt.clone();
+        self.profile_name = personalization.profile.name.clone().unwrap_or_default();
+        self.profile_language = personalization.profile.language.clone().unwrap_or_default();
+        self.profile_occupation = personalization
+            .profile
+            .occupation
+            .clone()
+            .unwrap_or_default();
+        self.response_style = personalization
+            .profile
+            .response_style
+            .clone()
+            .unwrap_or_default();
+        self.more_about_you = personalization
+            .profile
+            .more_about_you
+            .clone()
+            .unwrap_or_default();
+        self.header_lists_index = personalization.profile.header_lists.index();
+        self.emoji_index = personalization.profile.emoji.index();
+        self.memory_items = personalization.memory.clone();
     }
 
     pub(in crate::app) fn apply_to_settings(
@@ -235,7 +369,11 @@ impl SettingsForm {
         settings.context_message_limit = parsed_context_limit;
         settings.profile.name = normalize_form_field(&self.profile_name);
         settings.profile.language = normalize_form_field(&self.profile_language);
+        settings.profile.occupation = normalize_form_field(&self.profile_occupation);
         settings.profile.response_style = normalize_form_field(&self.response_style);
+        settings.profile.more_about_you = normalize_form_field(&self.more_about_you);
+        settings.profile.header_lists = self.header_lists();
+        settings.profile.emoji = self.emoji();
         settings.memory = self.memory_items.clone();
         settings.skills.datetime = self.skill_datetime;
         settings.skills.clipboard = self.skill_clipboard;
@@ -258,8 +396,12 @@ pub(in crate::app) struct SettingsUiState {
     pub(in crate::app) modal: Option<SettingsModal>,
     pub(in crate::app) add_model_provider_index: usize,
     pub(in crate::app) add_model_name: String,
-    pub(in crate::app) system_prompt_content: widget::text_editor::Content,
-    pub(in crate::app) system_prompt_editor_id: widget::Id,
+    pub(in crate::app) modal_editor_content: widget::text_editor::Content,
+    pub(in crate::app) modal_editor_id: widget::Id,
+    pub(in crate::app) occupation_content: widget::text_editor::Content,
+    pub(in crate::app) occupation_editor_id: widget::Id,
+    pub(in crate::app) preview_mode: PromptPreviewMode,
+    pub(in crate::app) modal_error: Option<String>,
     pub(in crate::app) connection_test_state: ConnectionTestState,
 }
 
@@ -270,9 +412,21 @@ impl SettingsUiState {
         self.modal = None;
         self.add_model_provider_index = settings.provider.active_provider.index();
         self.add_model_name.clear();
-        self.system_prompt_content =
+        self.sync_personalization_editors();
+        self.modal_editor_content =
             widget::text_editor::Content::with_text(&settings.base_system_prompt);
+        self.preview_mode = PromptPreviewMode::Code;
+        self.modal_error = None;
         self.connection_test_state = ConnectionTestState::Idle;
+    }
+
+    pub(in crate::app) fn sync_personalization_editors(&mut self) {
+        self.occupation_content =
+            widget::text_editor::Content::with_text(&self.form.profile_occupation);
+    }
+
+    pub(in crate::app) fn set_modal_editor_text(&mut self, value: &str) {
+        self.modal_editor_content = widget::text_editor::Content::with_text(value);
     }
 }
 
@@ -284,8 +438,12 @@ impl Default for SettingsUiState {
             modal: None,
             add_model_provider_index: ProviderKind::OpenRouter.index(),
             add_model_name: String::new(),
-            system_prompt_content: widget::text_editor::Content::new(),
-            system_prompt_editor_id: widget::Id::unique(),
+            modal_editor_content: widget::text_editor::Content::new(),
+            modal_editor_id: widget::Id::unique(),
+            occupation_content: widget::text_editor::Content::new(),
+            occupation_editor_id: widget::Id::unique(),
+            preview_mode: PromptPreviewMode::Code,
+            modal_error: None,
             connection_test_state: ConnectionTestState::Idle,
         }
     }

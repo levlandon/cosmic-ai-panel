@@ -249,30 +249,95 @@ impl AppModel {
 
     fn personalization_settings_content(&self) -> Element<'_, Message> {
         let spacing = cosmic::theme::spacing();
-        let prompt_section =
-            widget::settings::section()
-                .title("System prompt")
-                .add(widget::settings::item(
-                    "Base system prompt",
-                    button::standard("Edit prompt").on_press(Message::OpenSystemPromptModal),
-                ));
+        let prompt_actions = row![
+            button::standard("Edit prompt").on_press(Message::OpenSystemPromptModal),
+            button::text("Preview prompt").on_press(Message::OpenPromptPreviewModal),
+        ]
+        .spacing(spacing.space_s)
+        .width(Length::Fill);
+
+        let prompt_section = widget::settings::section()
+            .title("System prompt")
+            .add(widget::settings::item("Base system prompt", prompt_actions));
+
+        let preference_labels = SettingsForm::preference_labels();
+        let response_style_summary = compact_text_preview(&self.settings_ui.form.response_style);
+        let more_about_you_summary = compact_text_preview(&self.settings_ui.form.more_about_you);
 
         let profile_section = widget::settings::section()
             .title("Profile")
             .add(widget::settings::item(
                 "Name",
-                widget::text_input::text_input("Optional", &self.settings_ui.form.profile_name)
+                full_width_text_input("Optional", &self.settings_ui.form.profile_name)
                     .on_input(Message::ProfileNameChanged),
             ))
             .add(widget::settings::item(
                 "Preferred language",
-                widget::text_input::text_input("Optional", &self.settings_ui.form.profile_language)
+                full_width_text_input("Optional", &self.settings_ui.form.profile_language)
                     .on_input(Message::ProfileLanguageChanged),
             ))
             .add(widget::settings::item(
+                "Occupation",
+                container(
+                    widget::text_editor(&self.settings_ui.occupation_content)
+                        .id(self.settings_ui.occupation_editor_id.clone())
+                        .on_action(Message::ProfileOccupationEdited)
+                        .padding([8, 0])
+                        .height(Length::Fixed(88.0))
+                        .wrapping(core_text::Wrapping::WordOrGlyph)
+                        .class(composer_editor_class()),
+                )
+                .padding([spacing.space_s, spacing.space_m])
+                .width(Length::Fill)
+                .class(composer_container_class()),
+            ))
+            .add(widget::settings::item(
                 "Response style",
-                widget::text_input::text_input("Optional", &self.settings_ui.form.response_style)
-                    .on_input(Message::ResponseStyleChanged),
+                column![
+                    button::standard("Edit response style")
+                        .on_press(Message::OpenResponseStyleModal),
+                    widget::text::caption(response_style_summary).class(
+                        cosmic::theme::Text::Color(Color::from_rgba(1.0, 1.0, 1.0, 0.56))
+                    ),
+                ]
+                .spacing(spacing.space_xxs)
+                .width(Length::Fill),
+            ))
+            .add(widget::settings::item(
+                "More about you",
+                column![
+                    button::standard("Edit more about you")
+                        .on_press(Message::OpenMoreAboutYouModal),
+                    widget::text::caption(more_about_you_summary).class(
+                        cosmic::theme::Text::Color(Color::from_rgba(1.0, 1.0, 1.0, 0.56))
+                    ),
+                ]
+                .spacing(spacing.space_xxs)
+                .width(Length::Fill),
+            ))
+            .add(widget::settings::item(
+                "Header & Lists",
+                container(
+                    widget::dropdown(
+                        preference_labels,
+                        Some(self.settings_ui.form.header_lists_index),
+                        Message::HeaderListsSelected,
+                    )
+                    .padding([8, 0, 8, 16]),
+                )
+                .width(Length::Fill),
+            ))
+            .add(widget::settings::item(
+                "Emoji",
+                container(
+                    widget::dropdown(
+                        preference_labels,
+                        Some(self.settings_ui.form.emoji_index),
+                        Message::EmojiSelected,
+                    )
+                    .padding([8, 0, 8, 16]),
+                )
+                .width(Length::Fill),
             ));
 
         let mut memory_rows = widget::column().spacing(spacing.space_s);
@@ -296,15 +361,25 @@ impl AppModel {
             .add(memory_content)
             .add(button::standard("Add memory item").on_press(Message::AddMemoryItem));
 
-        let reset_section = widget::settings::section()
-            .title("Reset")
-            .add(button::standard("Reset personalization").on_press(Message::ResetPersonalization));
+        let management_section = widget::settings::section()
+            .title("Manage personalization")
+            .add(
+                row![
+                    button::standard("Import profile")
+                        .on_press(Message::OpenImportPersonalizationModal),
+                    button::standard("Export profile")
+                        .on_press(Message::OpenExportPersonalizationModal),
+                    button::text("Reset personalization").on_press(Message::ResetPersonalization),
+                ]
+                .spacing(spacing.space_s)
+                .width(Length::Fill),
+            );
 
         widget::settings::view_column(vec![
             prompt_section.into(),
             profile_section.into(),
             memory_section.into(),
-            reset_section.into(),
+            management_section.into(),
         ])
         .into()
     }
@@ -335,6 +410,28 @@ impl AppModel {
             );
 
         widget::settings::view_column(vec![section.into()]).into()
+    }
+}
+
+fn full_width_text_input<'a>(
+    placeholder: &'a str,
+    value: &'a str,
+) -> widget::text_input::TextInput<'a, Message> {
+    widget::text_input::text_input(placeholder, value).width(Length::Fill)
+}
+
+fn compact_text_preview(value: &str) -> String {
+    let trimmed = value.trim();
+    if trimmed.is_empty() {
+        "Not set".into()
+    } else {
+        let single_line = trimmed.lines().next().unwrap_or(trimmed).trim();
+        let preview: String = single_line.chars().take(72).collect();
+        if single_line.chars().count() > 72 || trimmed.lines().nth(1).is_some() {
+            format!("{preview}...")
+        } else {
+            preview
+        }
     }
 }
 

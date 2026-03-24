@@ -192,14 +192,35 @@ impl AppModel {
                 self.open_system_prompt_modal();
                 Task::none()
             }
-            Message::SystemPromptEdited(action) => {
-                self.edit_system_prompt(action);
+            Message::OpenResponseStyleModal => {
+                self.open_response_style_modal();
                 Task::none()
             }
-            Message::SaveSystemPrompt => {
-                self.save_system_prompt();
+            Message::OpenMoreAboutYouModal => {
+                self.open_more_about_you_modal();
                 Task::none()
             }
+            Message::OpenImportPersonalizationModal => {
+                self.open_import_personalization_modal();
+                Task::none()
+            }
+            Message::OpenExportPersonalizationModal => {
+                self.open_export_personalization_modal();
+                Task::none()
+            }
+            Message::OpenPromptPreviewModal => {
+                self.open_prompt_preview_modal();
+                Task::none()
+            }
+            Message::SettingsModalEdited(action) => {
+                self.edit_settings_modal(action);
+                Task::none()
+            }
+            Message::SaveSettingsModal => {
+                self.save_settings_modal();
+                Task::none()
+            }
+            Message::CopyExportedPersonalization => self.copy_exported_personalization(),
             Message::ProfileNameChanged(value) => {
                 self.set_profile_name(value);
                 Task::none()
@@ -208,8 +229,20 @@ impl AppModel {
                 self.set_profile_language(value);
                 Task::none()
             }
-            Message::ResponseStyleChanged(value) => {
-                self.set_response_style(value);
+            Message::ProfileOccupationEdited(action) => {
+                self.edit_profile_occupation(action);
+                Task::none()
+            }
+            Message::HeaderListsSelected(index) => {
+                self.select_header_lists(index);
+                Task::none()
+            }
+            Message::EmojiSelected(index) => {
+                self.select_emoji(index);
+                Task::none()
+            }
+            Message::PromptPreviewModeSelected(mode) => {
+                self.select_prompt_preview_mode(mode);
                 Task::none()
             }
             Message::AddMemoryItem => {

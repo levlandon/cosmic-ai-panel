@@ -610,6 +610,7 @@ mod tests {
             name: Some("Lev".into()),
             language: Some("English".into()),
             response_style: Some("Concise".into()),
+            ..UserProfile::default()
         };
         settings.memory = vec!["User uses COSMIC desktop".into()];
         settings.provider.default_model = Some(crate::chat::SavedModel::new(

@@ -329,6 +329,7 @@ impl AppModel {
             let should_clear = match copied {
                 CopiedTarget::Message(message_id) => message_ids.contains(message_id),
                 CopiedTarget::CodeBlock { message_id, .. } => message_ids.contains(message_id),
+                CopiedTarget::SettingsExport => false,
             };
             if should_clear {
                 self.copied_target = None;

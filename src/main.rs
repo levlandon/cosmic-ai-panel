@@ -4,6 +4,7 @@ mod app;
 mod chat;
 mod config;
 mod i18n;
+mod personalization;
 mod provider;
 mod runtime;
 mod secrets;
