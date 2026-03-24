@@ -173,27 +173,25 @@ impl AppSettings {
         let mut saved_models = Vec::new();
 
         for model in self.saved_models.drain(..) {
-            if let Some(model) = SavedModel::normalized(model.provider, &model.name) {
-                if seen.insert(model.clone()) {
-                    saved_models.push(model);
-                }
+            if let Some(model) = SavedModel::normalized(model.provider, &model.name)
+                && seen.insert(model.clone())
+            {
+                saved_models.push(model);
             }
         }
 
         if let Some(model) =
             SavedModel::normalized(ProviderKind::OpenRouter, &self.legacy_openrouter_model)
+            && seen.insert(model.clone())
         {
-            if seen.insert(model.clone()) {
-                saved_models.push(model);
-            }
+            saved_models.push(model);
         }
 
         if let Some(model) =
             SavedModel::normalized(ProviderKind::LmStudio, &self.legacy_lmstudio_model)
+            && seen.insert(model.clone())
         {
-            if seen.insert(model.clone()) {
-                saved_models.push(model);
-            }
+            saved_models.push(model);
         }
 
         self.saved_models = saved_models;
@@ -203,10 +201,10 @@ impl AppSettings {
             .take()
             .and_then(|model| SavedModel::normalized(model.provider, &model.name));
 
-        if let Some(default_model) = self.default_model.clone() {
-            if !self.saved_models.contains(&default_model) {
-                self.saved_models.push(default_model);
-            }
+        if let Some(default_model) = self.default_model.clone()
+            && !self.saved_models.contains(&default_model)
+        {
+            self.saved_models.push(default_model);
         }
 
         if self

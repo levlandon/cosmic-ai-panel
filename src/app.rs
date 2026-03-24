@@ -9,6 +9,7 @@ mod model;
 mod provider_events;
 mod runtime;
 mod settings_actions;
+mod settings_state;
 mod style;
 mod views;
 
@@ -44,6 +45,9 @@ use cosmic::widget::button::Catalog;
 use cosmic::widget::{self, button, header_bar};
 use message::Message;
 use reqwest::Client;
+pub(in crate::app) use settings_state::{
+    ConnectionTestState, SettingsForm, SettingsModal, SettingsUiState,
+};
 use std::cell::Cell;
 use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, OnceLock};
@@ -66,7 +70,6 @@ const USER_MESSAGE_HORIZONTAL_PADDING: f32 = 32.0;
 const USER_MESSAGE_EDITOR_WIDTH_BUFFER: f32 = 12.0;
 const MESSAGE_TEXT_SIZE_PX: f32 = 14.0;
 const CHAT_AUTOSCROLL_THRESHOLD_PX: f32 = 36.0;
-const SETTINGS_PROVIDER_OPTIONS: [&str; 2] = ["OpenRouter", "LM Studio"];
 const CHAT_MODEL_DROPDOWN_WIDTH: f32 = 236.0;
 
 static PROVIDER_EVENTS_RX: OnceLock<Arc<Mutex<UnboundedReceiver<provider::ProviderEvent>>>> =
@@ -78,144 +81,6 @@ enum PanelView {
     Chat,
     Chats,
     Settings,
-}
-
-#[derive(Debug, Clone, Copy, Eq, PartialEq)]
-enum SettingsModal {
-    AddModel,
-    SystemPrompt,
-}
-
-#[derive(Debug, Clone, Default)]
-enum ConnectionTestState {
-    #[default]
-    Idle,
-    Testing,
-    Success,
-    Failed(String),
-}
-
-#[derive(Debug, Clone, Default)]
-struct SettingsForm {
-    provider_index: usize,
-    openrouter_api_key: String,
-    lmstudio_base_url: String,
-    saved_models: Vec<SavedModel>,
-    default_model: Option<SavedModel>,
-    system_prompt: String,
-    context_message_limit: String,
-}
-
-impl SettingsForm {
-    fn from_settings(settings: &AppSettings) -> Self {
-        Self {
-            provider_index: settings.provider.index(),
-            openrouter_api_key: settings.openrouter_api_key.clone(),
-            lmstudio_base_url: settings.lmstudio_base_url.clone(),
-            saved_models: settings.saved_models.clone(),
-            default_model: settings.default_model.clone(),
-            system_prompt: settings.system_prompt.clone(),
-            context_message_limit: settings.context_message_limit.to_string(),
-        }
-    }
-
-    fn provider(&self) -> ProviderKind {
-        ProviderKind::from_index(self.provider_index)
-    }
-
-    fn provider_labels() -> &'static [&'static str; 2] {
-        &SETTINGS_PROVIDER_OPTIONS
-    }
-
-    fn default_model_options(&self) -> Vec<String> {
-        self.saved_models
-            .iter()
-            .map(SavedModel::dropdown_label)
-            .collect()
-    }
-
-    fn default_model_index(&self) -> Option<usize> {
-        let selected = self.default_model.as_ref()?;
-        self.saved_models.iter().position(|model| model == selected)
-    }
-
-    fn select_provider(&mut self, provider: ProviderKind) {
-        self.provider_index = provider.index();
-
-        if self
-            .default_model
-            .as_ref()
-            .is_none_or(|model| model.provider != provider)
-        {
-            self.default_model = self
-                .saved_models
-                .iter()
-                .find(|model| model.provider == provider)
-                .cloned();
-        }
-    }
-
-    fn select_default_model(&mut self, index: usize) {
-        if let Some(model) = self.saved_models.get(index).cloned() {
-            self.provider_index = model.provider.index();
-            self.default_model = Some(model);
-        }
-    }
-
-    fn add_model(&mut self, provider: ProviderKind, name: &str) -> bool {
-        let Some(model) = SavedModel::normalized(provider, name) else {
-            return false;
-        };
-
-        if !self.saved_models.contains(&model) {
-            self.saved_models.push(model.clone());
-        }
-
-        if self.default_model.is_none() {
-            self.default_model = Some(model.clone());
-            self.provider_index = model.provider.index();
-        }
-
-        true
-    }
-
-    fn remove_model(&mut self, index: usize) {
-        if index >= self.saved_models.len() {
-            return;
-        }
-
-        let removed = self.saved_models.remove(index);
-        if self.default_model.as_ref() == Some(&removed) {
-            self.default_model = self
-                .saved_models
-                .iter()
-                .find(|model| model.provider == self.provider())
-                .cloned()
-                .or_else(|| self.saved_models.first().cloned());
-
-            if let Some(model) = &self.default_model {
-                self.provider_index = model.provider.index();
-            }
-        }
-    }
-
-    fn apply_to_settings(&self, settings: &mut AppSettings) -> bool {
-        settings.provider = self.provider();
-        settings.openrouter_api_key = self.openrouter_api_key.trim().to_string();
-        settings.lmstudio_base_url = self.lmstudio_base_url.trim().to_string();
-        settings.saved_models = self.saved_models.clone();
-        settings.default_model = self.default_model.clone();
-        settings.system_prompt = self.system_prompt.clone();
-
-        let parsed_context_limit = self.context_message_limit.trim().parse::<usize>().ok();
-
-        if let Some(limit) = parsed_context_limit {
-            settings.context_message_limit = limit;
-        }
-
-        settings.normalize();
-        parsed_context_limit.is_some()
-    }
 }
 
 #[derive(Debug, Clone)]
@@ -299,13 +164,7 @@ pub struct AppModel {
     hovered_chat_id: Option<u64>,
     hovered_message_id: Option<u64>,
     copied_target: Option<CopiedTarget>,
-    settings_form: SettingsForm,
-    settings_modal: Option<SettingsModal>,
-    add_model_provider_index: usize,
-    add_model_name: String,
-    system_prompt_content: widget::text_editor::Content,
-    system_prompt_editor_id: widget::Id,
-    connection_test_state: ConnectionTestState,
+    settings_ui: SettingsUiState,
     provider_client: Client,
     provider_events_tx: UnboundedSender<provider::ProviderEvent>,
     provider_task: Option<JoinHandle<()>>,
@@ -441,9 +300,6 @@ impl cosmic::Application for AppModel {
     }
 }
 
-impl AppModel {
-}
-
 fn summarize_title(prompt: &str) -> String {
     let trimmed = prompt.trim();
     let mut summary = trimmed.chars().take(36).collect::<String>();
@@ -468,8 +324,8 @@ fn message_edit_key_binding(
 ) -> Option<widget::text_editor::Binding<Message>> {
     editor_key_binding(
         key_press,
-        Message::SaveEditedMessage,
-        Some(Message::CancelEditedMessage),
+        Message::SaveInlineEdit,
+        Some(Message::CancelInlineEdit),
     )
 }
 

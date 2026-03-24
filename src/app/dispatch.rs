@@ -29,11 +29,11 @@ impl AppModel {
                 }
                 Task::none()
             }
-            Message::MessageHovered(message_id) => {
+            Message::HoverMessageRow(message_id) => {
                 self.hovered_message_id = Some(message_id);
                 Task::none()
             }
-            Message::MessageUnhovered(message_id) => {
+            Message::LeaveMessageRow(message_id) => {
                 if self.hovered_message_id == Some(message_id) {
                     self.hovered_message_id = None;
                 }
@@ -76,14 +76,14 @@ impl AppModel {
                 self.editing_content.perform(action);
                 Task::none()
             }
-            Message::MessageViewerEdited(message_id, action) => {
+            Message::ViewerEdited(message_id, action) => {
                 self.perform_message_view_action(message_id, action);
                 Task::none()
             }
             Message::MarkdownLink(_uri) => Task::none(),
             Message::SubmitComposer => self.submit_message(),
-            Message::SaveEditedMessage => self.save_edited_message(),
-            Message::CancelEditedMessage => {
+            Message::SaveInlineEdit => self.save_edited_message(),
+            Message::CancelInlineEdit => {
                 self.reset_inline_edit();
                 Task::none()
             }
@@ -93,7 +93,7 @@ impl AppModel {
                 Task::none()
             }
             Message::ProviderEvent(event) => self.handle_provider_event(event),
-            Message::CopyMessage(message_id) => {
+            Message::CopyEntry(message_id) => {
                 if let Some(content) = self.message_content_by_id(message_id) {
                     self.copy_to_clipboard(CopiedTarget::Message(message_id), content)
                 } else {
@@ -121,7 +121,7 @@ impl AppModel {
             Message::RegenerateLastAssistant(message_id) => {
                 self.regenerate_last_assistant(message_id)
             }
-            Message::EditUserMessage(message_id) => self.edit_user_message(message_id),
+            Message::BeginUserEdit(message_id) => self.edit_user_message(message_id),
             Message::DeleteLastAssistant(message_id) => self.delete_last_assistant(message_id),
             Message::BranchConversation(message_id) => self.branch_conversation(message_id),
             Message::ProviderSelected(index) => {

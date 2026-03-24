@@ -3,6 +3,7 @@
 
 mod chat;
 mod chats;
-mod components;
+mod feedback;
+mod messages;
 mod settings;
-
+mod settings_parts;

@@ -360,10 +360,10 @@ fn extract_stream_text(value: &Value, allow_message_fallback: bool) -> Option<St
         return Some(content);
     }
 
-    if allow_message_fallback {
-        if let Some(content) = extract_string(value.pointer("/choices/0/message/content")) {
-            return Some(content);
-        }
+    if allow_message_fallback
+        && let Some(content) = extract_string(value.pointer("/choices/0/message/content"))
+    {
+        return Some(content);
     }
 
     None

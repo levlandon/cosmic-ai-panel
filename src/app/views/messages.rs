@@ -1,9 +1,9 @@
 // SPDX-License-Identifier: MPL-2.0
-//! Reusable view helpers for message rendering, notices, and settings widgets.
+//! Message rendering helpers, action rows, and markdown viewer widgets.
 
 use super::super::*;
 use super::super::style::*;
-use cosmic::iced_widget::{column, container, rich_text, row, scrollable, text};
+use cosmic::iced_widget::{column, container, rich_text, row, scrollable};
 
 impl AppModel {
     pub(in crate::app) fn message_viewer<'a>(
@@ -23,170 +23,13 @@ impl AppModel {
         Some(
             widget::text_editor(content)
                 .placeholder("")
-                .on_action(move |action| Message::MessageViewerEdited(message.id, action))
+                .on_action(move |action| Message::ViewerEdited(message.id, action))
                 .padding([0, 0])
                 .height(Length::Shrink)
                 .min_height(COMPOSER_LINE_HEIGHT + 4.0)
                 .wrapping(core_text::Wrapping::WordOrGlyph)
                 .class(message_viewer_class(color))
                 .width(width)
-                .into(),
-        )
-    }
-
-    pub(in crate::app) fn settings_connection_status(&self) -> Option<Element<'_, Message>> {
-        let text = match &self.connection_test_state {
-            ConnectionTestState::Idle => return None,
-            ConnectionTestState::Testing => {
-                return Some(
-                    widget::text::caption("Testing connection...")
-                        .class(cosmic::theme::Text::Color(Color::from_rgba(
-                            1.0, 1.0, 1.0, 0.62,
-                        )))
-                        .into(),
-                );
-            }
-            ConnectionTestState::Success => widget::text::caption("Connection OK")
-                .class(cosmic::theme::Text::Color(Color::from_rgb(0.48, 0.9, 0.62)))
-                .into(),
-            ConnectionTestState::Failed(error) => column![
-                widget::text::caption("Connection failed")
-                    .class(cosmic::theme::Text::Color(Color::from_rgb(1.0, 0.42, 0.42))),
-                widget::text::caption(error.clone()).class(cosmic::theme::Text::Color(
-                    Color::from_rgba(1.0, 1.0, 1.0, 0.56)
-                )),
-            ]
-            .spacing(4)
-            .into(),
-        };
-
-        Some(text)
-    }
-
-    pub(in crate::app) fn saved_model_row(
-        &self,
-        index: usize,
-        model: &SavedModel,
-    ) -> Element<'_, Message> {
-        let spacing = cosmic::theme::spacing();
-        let is_default = self.settings_form.default_model.as_ref() == Some(model);
-
-        let meta = if is_default {
-            format!("{} · Default", model.provider.label())
-        } else {
-            model.provider.label().to_string()
-        };
-
-        container(
-            row![
-                column![
-                    widget::text::body(model.name.clone()),
-                    widget::text::caption(meta).class(cosmic::theme::Text::Color(
-                        Color::from_rgba(1.0, 1.0, 1.0, 0.56)
-                    )),
-                ]
-                .spacing(4)
-                .width(Length::Fill),
-                button::icon(widget::icon::from_name("window-close-symbolic").size(14))
-                    .on_press(Message::RemoveSavedModel(index)),
-            ]
-            .spacing(spacing.space_s)
-            .align_y(Alignment::Center),
-        )
-        .padding([spacing.space_s, spacing.space_m])
-        .class(chat_list_card_class())
-        .into()
-    }
-
-    pub(in crate::app) fn settings_modal_overlay(&self) -> Option<Element<'_, Message>> {
-        let spacing = cosmic::theme::spacing();
-
-        let card: Element<'_, Message> = match self.settings_modal {
-            Some(SettingsModal::AddModel) => {
-                let provider_options = SettingsForm::provider_labels();
-                let mut save_button = button::standard("Save");
-                if !self.add_model_name.trim().is_empty() {
-                    save_button = save_button.on_press(Message::SaveAddedModel);
-                }
-
-                container(
-                    column![
-                        widget::text::heading("Add model"),
-                        widget::settings::section()
-                            .add(widget::settings::item(
-                                "Provider",
-                                widget::dropdown(
-                                    provider_options,
-                                    Some(self.add_model_provider_index),
-                                    Message::AddModelProviderSelected,
-                                )
-                                .padding([8, 0, 8, 16]),
-                            ))
-                            .add(
-                                column![
-                                    widget::text::caption("Model name").class(
-                                        cosmic::theme::Text::Color(Color::from_rgba(
-                                            1.0, 1.0, 1.0, 0.62
-                                        ))
-                                    ),
-                                    widget::text_input::text_input(
-                                        "openrouter/free or deepseek-chat",
-                                        &self.add_model_name,
-                                    )
-                                    .on_input(Message::AddModelNameChanged),
-                                ]
-                                .spacing(spacing.space_xxs),
-                            ),
-                        row![
-                            save_button,
-                            button::text("Cancel").on_press(Message::CloseSettingsModal),
-                        ]
-                        .spacing(spacing.space_s),
-                    ]
-                    .spacing(spacing.space_m),
-                )
-                .padding(spacing.space_m)
-                .width(Length::Fixed(PANEL_WIDTH - 48.0))
-                .class(chat_list_card_class())
-                .into()
-            }
-            Some(SettingsModal::SystemPrompt) => container(
-                column![
-                    widget::text::heading("Edit system prompt"),
-                    container(
-                        widget::text_editor(&self.system_prompt_content)
-                            .id(self.system_prompt_editor_id.clone())
-                            .on_action(Message::SystemPromptEdited)
-                            .padding([8, 0])
-                            .height(Length::Fixed(220.0))
-                            .wrapping(core_text::Wrapping::WordOrGlyph)
-                            .class(composer_editor_class())
-                    )
-                    .padding([spacing.space_s, spacing.space_m])
-                    .class(composer_container_class()),
-                    row![
-                        button::standard("Save").on_press(Message::SaveSystemPrompt),
-                        button::text("Cancel").on_press(Message::CloseSettingsModal),
-                    ]
-                    .spacing(spacing.space_s),
-                ]
-                .spacing(spacing.space_m),
-            )
-            .padding(spacing.space_m)
-            .width(Length::Fixed(PANEL_WIDTH - 32.0))
-            .class(chat_list_card_class())
-            .into(),
-            None => return None,
-        };
-
-        Some(
-            container(card)
-                .width(Length::Fill)
-                .height(Length::Fill)
-                .center_x(Length::Fill)
-                .center_y(Length::Fill)
-                .padding(spacing.space_m)
-                .class(settings_modal_backdrop_class())
                 .into(),
         )
     }
@@ -301,8 +144,8 @@ impl AppModel {
 
         if message.role == ChatRole::User {
             widget::mouse_area(content)
-                .on_enter(Message::MessageHovered(message.id))
-                .on_exit(Message::MessageUnhovered(message.id))
+                .on_enter(Message::HoverMessageRow(message.id))
+                .on_exit(Message::LeaveMessageRow(message.id))
                 .interaction(mouse::Interaction::Idle)
                 .into()
         } else {
@@ -349,13 +192,13 @@ impl AppModel {
                     vec![
                         self.message_action_button(
                             "object-select-symbolic",
-                            Some(Message::SaveEditedMessage),
+                            Some(Message::SaveInlineEdit),
                             true,
                             true,
                         ),
                         self.message_action_button(
                             "window-close-symbolic",
-                            Some(Message::CancelEditedMessage),
+                            Some(Message::CancelInlineEdit),
                             true,
                             true,
                         ),
@@ -364,7 +207,7 @@ impl AppModel {
                     let edit_button: Element<'a, Message> = if !actions_locked {
                         self.message_action_button(
                             "edit-symbolic",
-                            Some(Message::EditUserMessage(message.id)),
+                            Some(Message::BeginUserEdit(message.id)),
                             user_actions_visible,
                             true,
                         )
@@ -376,7 +219,7 @@ impl AppModel {
                         edit_button,
                         self.message_action_button(
                             copy_icon,
-                            Some(Message::CopyMessage(message.id)),
+                            Some(Message::CopyEntry(message.id)),
                             user_actions_visible,
                             true,
                         ),
@@ -409,7 +252,7 @@ impl AppModel {
 
                 let mut buttons = vec![self.message_action_button(
                     copy_icon,
-                    Some(Message::CopyMessage(message.id)),
+                    Some(Message::CopyEntry(message.id)),
                     true,
                     false,
                 )];
@@ -483,76 +326,6 @@ impl AppModel {
             .width(Length::Fixed(frame_size))
             .center_x(Length::Fixed(frame_size))
             .into()
-    }
-
-    pub(in crate::app) fn loading_indicator(&self) -> Element<'_, Message> {
-        let sizes = [10.0, 11.5, 13.0, 14.0, 13.0, 11.5];
-        let dot_size = sizes[self.loading_phase as usize % sizes.len()];
-        let frame_size = 18.0;
-
-        container(
-            container(
-                container(text(""))
-                    .width(Length::Fixed(dot_size))
-                    .height(Length::Fixed(dot_size))
-                    .class(loading_dot_class()),
-            )
-            .width(Length::Fixed(frame_size))
-            .height(Length::Fixed(frame_size))
-            .center_x(Length::Fixed(frame_size))
-            .center_y(Length::Fixed(frame_size)),
-        )
-        .width(Length::Fill)
-        .align_x(alignment::Horizontal::Left)
-        .padding([0, 4])
-        .into()
-    }
-
-    pub(in crate::app) fn error_notice(&self) -> Element<'_, Message> {
-        let Some(error) = &self.chat_error else {
-            return container(text("")).into();
-        };
-
-        let retry_button: Element<'_, Message> =
-            if error.assistant_message_id.is_some() || error.request.endpoint.is_empty() {
-                container(text("")).width(Length::Fixed(20.0)).into()
-            } else {
-                button::icon(widget::icon::from_name("view-refresh-symbolic").size(16))
-                    .class(cosmic::theme::Button::Icon)
-                    .on_press(Message::RetryRequest(error.chat_id))
-                    .into()
-            };
-
-        let content = row![
-            widget::text::body(&error.message)
-                .class(cosmic::theme::Text::Color(Color::from_rgb(1.0, 0.42, 0.42)))
-                .width(Length::Fill),
-            retry_button,
-        ]
-        .spacing(cosmic::theme::spacing().space_xs)
-        .align_y(Alignment::Center);
-
-        container(content)
-            .width(Length::Fill)
-            .padding([12, 14])
-            .class(error_notice_class())
-            .into()
-    }
-
-    pub(in crate::app) fn transient_chat_notice_card(&self, notice: &str) -> Element<'_, Message> {
-        container(
-            container(
-                widget::text::caption(notice.to_owned()).class(cosmic::theme::Text::Color(
-                    Color::from_rgba(1.0, 1.0, 1.0, 0.82),
-                )),
-            )
-            .padding([8, 12])
-            .class(transient_chat_notice_class()),
-        )
-        .width(Length::Fill)
-        .align_x(alignment::Horizontal::Center)
-        .padding([0, cosmic::theme::spacing().space_s])
-        .into()
     }
 }
 

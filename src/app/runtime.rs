@@ -41,12 +41,13 @@ impl AppModel {
             }
         }
 
-        let settings_form = SettingsForm::from_settings(&state.settings);
+        let mut settings_ui = SettingsUiState::default();
+        settings_ui.refresh_from_settings(&state.settings);
 
         let mut app = AppModel {
             core,
             state,
-            settings_form,
+            settings_ui,
             status,
             config: cosmic_config::Config::new(
                 <Self as cosmic::Application>::APP_ID,
@@ -120,13 +121,7 @@ impl AppModel {
             copied_target: None,
             message_view_content: HashMap::new(),
             message_view_text: HashMap::new(),
-            settings_form: SettingsForm::default(),
-            settings_modal: None,
-            add_model_provider_index: ProviderKind::OpenRouter.index(),
-            add_model_name: String::new(),
-            system_prompt_content: widget::text_editor::Content::new(),
-            system_prompt_editor_id: widget::Id::unique(),
-            connection_test_state: ConnectionTestState::Idle,
+            settings_ui: SettingsUiState::default(),
             provider_client: Client::new(),
             provider_events_tx,
             provider_task: None,

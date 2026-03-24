@@ -11,18 +11,21 @@ impl AppModel {
         let spacing = cosmic::theme::spacing();
         let provider_options = SettingsForm::provider_labels();
         let mut test_button = button::standard("Test connection");
-        if !matches!(self.connection_test_state, ConnectionTestState::Testing) {
+        if !matches!(
+            self.settings_ui.connection_test_state,
+            ConnectionTestState::Testing
+        ) {
             test_button = test_button.on_press(Message::TestConnection);
         }
 
         let provider_control = widget::dropdown(
             provider_options,
-            Some(self.settings_form.provider_index),
+            Some(self.settings_ui.form.provider_index),
             Message::ProviderSelected,
         )
         .padding([8, 0, 8, 16]);
 
-        let provider_section = match self.settings_form.provider() {
+        let provider_section = match self.settings_ui.form.provider() {
             ProviderKind::OpenRouter => widget::settings::section()
                 .title("Provider")
                 .add(widget::settings::item("Provider", provider_control))
@@ -32,7 +35,7 @@ impl AppModel {
                         container(
                             widget::text_input::secure_input(
                                 "sk-or-...",
-                                &self.settings_form.openrouter_api_key,
+                                &self.settings_ui.form.openrouter_api_key,
                                 None,
                                 true,
                             )
@@ -56,7 +59,7 @@ impl AppModel {
                         container(
                             widget::text_input::text_input(
                                 "http://127.0.0.1:1234",
-                                &self.settings_form.lmstudio_base_url,
+                                &self.settings_ui.form.lmstudio_base_url,
                             )
                             .on_input(Message::LmStudioUrlChanged)
                         )
@@ -72,11 +75,11 @@ impl AppModel {
         };
 
         let mut saved_models_list = widget::column().spacing(spacing.space_s);
-        for (index, model) in self.settings_form.saved_models.iter().enumerate() {
+        for (index, model) in self.settings_ui.form.saved_models.iter().enumerate() {
             saved_models_list = saved_models_list.push(self.saved_model_row(index, model));
         }
 
-        let saved_models_list: Element<'_, Message> = if self.settings_form.saved_models.len() > 5 {
+        let saved_models_list: Element<'_, Message> = if self.settings_ui.form.saved_models.len() > 5 {
             scrollable(saved_models_list)
                 .class(cosmic::style::iced::Scrollable::Minimal)
                 .direction(thin_vertical_scrollbar())
@@ -91,21 +94,21 @@ impl AppModel {
             .add(saved_models_list)
             .add(button::standard("Add model").on_press(Message::OpenAddModelModal));
 
-        let default_model_section = if self.settings_form.saved_models.is_empty() {
+        let default_model_section = if self.settings_ui.form.saved_models.is_empty() {
             widget::settings::section().title("Default model").add(
                 widget::text::caption("Add at least one model").class(cosmic::theme::Text::Color(
                     Color::from_rgba(1.0, 1.0, 1.0, 0.56),
                 )),
             )
         } else {
-            let options = self.settings_form.default_model_options();
+            let options = self.settings_ui.form.default_model_options();
             widget::settings::section()
                 .title("Default model")
                 .add(widget::settings::item(
                     "Default model",
                     widget::dropdown(
                         options,
-                        self.settings_form.default_model_index(),
+                        self.settings_ui.form.default_model_index(),
                         Message::DefaultModelSelected,
                     )
                     .padding([8, 0, 8, 16]),
@@ -113,7 +116,8 @@ impl AppModel {
         };
 
         let context_limit_invalid = self
-            .settings_form
+            .settings_ui
+            .form
             .context_message_limit
             .trim()
             .parse::<usize>()
@@ -133,7 +137,7 @@ impl AppModel {
                 "Max messages in context",
                 widget::text_input::text_input(
                     "0 = unlimited",
-                    &self.settings_form.context_message_limit,
+                    &self.settings_ui.form.context_message_limit,
                 )
                 .on_input(Message::ContextLimitChanged),
             ))
