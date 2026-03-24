@@ -2,9 +2,12 @@
 
 mod chat_actions;
 mod chats_actions;
+mod dispatch;
 mod lifecycle;
+mod message;
 mod model;
 mod provider_events;
+mod runtime;
 mod settings_actions;
 mod style;
 mod views;
@@ -39,6 +42,7 @@ use cosmic::iced_widget::{column, container, text};
 use cosmic::prelude::*;
 use cosmic::widget::button::Catalog;
 use cosmic::widget::{self, button, header_bar};
+use message::Message;
 use reqwest::Client;
 use std::cell::Cell;
 use std::collections::{HashMap, HashSet};
@@ -314,71 +318,6 @@ pub struct AppModel {
     transient_chat_notice: Option<TransientChatNotice>,
 }
 
-/// Messages emitted by the application and its widgets.
-#[derive(Debug, Clone)]
-pub enum Message {
-    AppletPressed,
-    TogglePanel,
-    PanelClosed(Id),
-    EscapePressed(Id),
-    UpdateConfig(Config),
-    NewChat,
-    ToggleChatList,
-    SelectChat(u64),
-    ChatHovered(u64),
-    ChatUnhovered(u64),
-    MessageHovered(u64),
-    MessageUnhovered(u64),
-    BeginRenameChat(u64),
-    RenameInputChanged(String),
-    CommitRenameChat(String),
-    CancelRenameChat,
-    DeleteChat(u64),
-    OpenSettings,
-    CloseSettings,
-    ChatScrolled(cosmic::iced::widget::scrollable::Viewport),
-    ComposerEdited(widget::text_editor::Action),
-    InlineEditEdited(widget::text_editor::Action),
-    MessageViewerEdited(u64, widget::text_editor::Action),
-    MarkdownLink(widget::markdown::Uri),
-    SubmitComposer,
-    SaveEditedMessage,
-    CancelEditedMessage,
-    StopGeneration,
-    LoadingTick,
-    ProviderEvent(provider::ProviderEvent),
-    CopyMessage(u64),
-    CopyCodeBlock {
-        message_id: u64,
-        block_index: usize,
-        content: String,
-    },
-    ResetCopiedTarget(CopiedTarget),
-    RetryRequest(u64),
-    RegenerateLastAssistant(u64),
-    EditUserMessage(u64),
-    DeleteLastAssistant(u64),
-    BranchConversation(u64),
-    ProviderSelected(usize),
-    OpenRouterKeyChanged(String),
-    LmStudioUrlChanged(String),
-    ContextLimitChanged(String),
-    DefaultModelSelected(usize),
-    ActiveModelSelected(usize),
-    OpenAddModelModal,
-    CloseSettingsModal,
-    AddModelProviderSelected(usize),
-    AddModelNameChanged(String),
-    SaveAddedModel,
-    RemoveSavedModel(usize),
-    OpenSystemPromptModal,
-    SystemPromptEdited(widget::text_editor::Action),
-    SaveSystemPrompt,
-    TestConnection,
-    ConnectionTestFinished(Result<(), String>),
-    SaveSettings,
-}
-
 /// Create a COSMIC application from the app model
 impl cosmic::Application for AppModel {
     /// The async executor that will be used to run your application's commands.
@@ -403,62 +342,7 @@ impl cosmic::Application for AppModel {
 
     /// Initializes the application with any given flags and startup commands.
     fn init(core: Core, _flags: Self::Flags) -> (Self, Task<cosmic::Action<Self::Message>>) {
-        let mut state = storage::load_state();
-        state.settings.normalize();
-        if let Some(default_model) = state.settings.default_model.clone() {
-            for chat in &mut state.chats {
-                if chat.model.trim().is_empty() {
-                    chat.provider = default_model.provider;
-                    chat.model = default_model.name.clone();
-                }
-            }
-        }
-        let mut status = None;
-
-        match secrets::load_openrouter_api_key() {
-            Ok(Some(api_key)) => {
-                state.settings.openrouter_api_key = api_key;
-            }
-            Ok(None) => {
-                let legacy_key = state.settings.openrouter_api_key.trim().to_string();
-                if !legacy_key.is_empty() {
-                    match secrets::save_openrouter_api_key(&legacy_key) {
-                        Ok(()) => {
-                            state.settings.openrouter_api_key = legacy_key;
-                            if let Err(error) = storage::save_state(&state) {
-                                status = Some(format!("{}: {error}", fl!("status-save-failed")));
-                            }
-                        }
-                        Err(error) => {
-                            status = Some(error);
-                        }
-                    }
-                }
-            }
-            Err(error) => {
-                status = Some(error);
-            }
-        }
-
-        let settings_form = SettingsForm::from_settings(&state.settings);
-
-        let mut app = AppModel {
-            core,
-            state,
-            settings_form,
-            status,
-            config: cosmic_config::Config::new(Self::APP_ID, Config::VERSION)
-                .map(|context| match Config::get_entry(&context) {
-                    Ok(config) => config,
-                    Err((_errors, config)) => config,
-                })
-                .unwrap_or_default(),
-            ..Self::default_state()
-        };
-        app.rebuild_markdown_cache();
-        app.rebuild_message_view_cache();
-
-        (app, Task::none())
+        Self::init_app(core)
     }
 
     fn on_close_requested(&self, _id: Id) -> Option<Message> {
@@ -540,31 +424,7 @@ impl cosmic::Application for AppModel {
     /// activated by selectively appending to the subscription batch, and will
     /// continue to execute for the duration that they remain in the batch.
     fn subscription(&self) -> Subscription<Self::Message> {
-        Subscription::batch(vec![
-            self.core()
-                .watch_config::<Config>(Self::APP_ID)
-                .map(|update| {
-                    // for why in update.errors {
-                    //     tracing::error!(?why, "app config error");
-                    // }
-
-                    Message::UpdateConfig(update.config)
-                }),
-            event::listen_with(|event, _, id| match event {
-                Event::Window(window::Event::Closed) => Some(Message::PanelClosed(id)),
-                Event::Keyboard(keyboard::Event::KeyPressed {
-                    key: keyboard::Key::Named(keyboard::key::Named::Escape),
-                    ..
-                }) => Some(Message::EscapePressed(id)),
-                _ => None,
-            }),
-            if self.loading_chat_id.is_some() {
-                time::every(Duration::from_millis(LOADING_TICK_MS)).map(|_| Message::LoadingTick)
-            } else {
-                Subscription::none()
-            },
-            provider_events_subscription().map(Message::ProviderEvent),
-        ])
+        self.app_subscription()
     }
 
     /// Handles messages emitted by the application and its widgets.
@@ -573,215 +433,7 @@ impl cosmic::Application for AppModel {
     /// on the application's async runtime. The application will not exit until all
     /// tasks are finished.
     fn update(&mut self, message: Self::Message) -> Task<cosmic::Action<Self::Message>> {
-        match message {
-            Message::AppletPressed => {
-                return self.handle_applet_pressed();
-            }
-            Message::UpdateConfig(config) => {
-                self.config = config;
-            }
-            Message::NewChat => {
-                return self.handle_new_chat();
-            }
-            Message::ToggleChatList => {
-                self.toggle_chat_list();
-            }
-            Message::SelectChat(chat_id) => {
-                return self.select_chat(chat_id);
-            }
-            Message::ChatHovered(chat_id) => {
-                self.hovered_chat_id = Some(chat_id);
-            }
-            Message::ChatUnhovered(chat_id) => {
-                if self.hovered_chat_id == Some(chat_id) {
-                    self.hovered_chat_id = None;
-                }
-            }
-            Message::MessageHovered(message_id) => {
-                self.hovered_message_id = Some(message_id);
-            }
-            Message::MessageUnhovered(message_id) => {
-                if self.hovered_message_id == Some(message_id) {
-                    self.hovered_message_id = None;
-                }
-            }
-            Message::BeginRenameChat(chat_id) => {
-                self.begin_rename_chat(chat_id);
-            }
-            Message::RenameInputChanged(value) => {
-                self.rename_input = value;
-            }
-            Message::CommitRenameChat(value) => {
-                self.commit_rename_chat(value);
-            }
-            Message::CancelRenameChat => {
-                self.cancel_rename_chat();
-            }
-            Message::DeleteChat(chat_id) => {
-                self.delete_chat_action(chat_id);
-            }
-            Message::OpenSettings => {
-                self.open_settings();
-            }
-            Message::CloseSettings => {
-                return self.close_settings();
-            }
-            Message::ChatScrolled(viewport) => {
-                self.messages_bottom_distance = viewport.absolute_offset_reversed().y;
-            }
-            Message::ComposerEdited(action) => {
-                self.composer_content.perform(action);
-            }
-            Message::InlineEditEdited(action) => {
-                self.editing_content.perform(action);
-            }
-            Message::MessageViewerEdited(message_id, action) => {
-                self.perform_message_view_action(message_id, action);
-            }
-            Message::MarkdownLink(_uri) => {}
-            Message::SubmitComposer => {
-                return self.submit_message();
-            }
-            Message::SaveEditedMessage => {
-                return self.save_edited_message();
-            }
-            Message::CancelEditedMessage => {
-                self.reset_inline_edit();
-            }
-            Message::StopGeneration => {
-                return self.stop_generation();
-            }
-            Message::LoadingTick => {
-                self.loading_phase = (self.loading_phase + 1) % 6;
-            }
-            Message::ProviderEvent(event) => match event {
-                provider::ProviderEvent::Delta {
-                    request_id,
-                    chat_id,
-                    delta,
-                } => {
-                    self.handle_provider_delta(request_id, chat_id, delta);
-                    return self.scroll_messages_to_end(false);
-                }
-                provider::ProviderEvent::Finished {
-                    request_id,
-                    chat_id,
-                } => {
-                    self.handle_provider_finished(request_id, chat_id);
-                    return self.scroll_messages_to_end(false);
-                }
-                provider::ProviderEvent::Failed {
-                    request_id,
-                    chat_id,
-                    error,
-                } => {
-                    self.handle_provider_failed(request_id, chat_id, error);
-                    return self.scroll_messages_to_end(false);
-                }
-            },
-            Message::CopyMessage(message_id) => {
-                if let Some(content) = self.message_content_by_id(message_id) {
-                    return self.copy_to_clipboard(CopiedTarget::Message(message_id), content);
-                }
-            }
-            Message::CopyCodeBlock {
-                message_id,
-                block_index,
-                content,
-            } => {
-                return self.copy_to_clipboard(
-                    CopiedTarget::CodeBlock {
-                        message_id,
-                        block_index,
-                    },
-                    content,
-                );
-            }
-            Message::ResetCopiedTarget(target) => {
-                if self.copied_target.as_ref() == Some(&target) {
-                    self.copied_target = None;
-                }
-            }
-            Message::RetryRequest(chat_id) => {
-                return self.retry_request(chat_id);
-            }
-            Message::RegenerateLastAssistant(message_id) => {
-                return self.regenerate_last_assistant(message_id);
-            }
-            Message::EditUserMessage(message_id) => {
-                return self.edit_user_message(message_id);
-            }
-            Message::DeleteLastAssistant(message_id) => {
-                return self.delete_last_assistant(message_id);
-            }
-            Message::BranchConversation(message_id) => {
-                return self.branch_conversation(message_id);
-            }
-            Message::ProviderSelected(index) => {
-                self.select_settings_provider(index);
-            }
-            Message::OpenRouterKeyChanged(value) => {
-                self.set_openrouter_key(value);
-            }
-            Message::LmStudioUrlChanged(value) => {
-                self.set_lmstudio_url(value);
-            }
-            Message::ContextLimitChanged(value) => {
-                self.set_context_limit(value);
-            }
-            Message::DefaultModelSelected(index) => {
-                self.select_default_model(index);
-            }
-            Message::ActiveModelSelected(index) => {
-                self.select_active_model(index);
-            }
-            Message::OpenAddModelModal => {
-                self.open_add_model_modal();
-            }
-            Message::CloseSettingsModal => {
-                self.close_settings_modal();
-            }
-            Message::AddModelProviderSelected(index) => {
-                self.select_add_model_provider(index);
-            }
-            Message::AddModelNameChanged(value) => {
-                self.set_add_model_name(value);
-            }
-            Message::SaveAddedModel => {
-                self.save_added_model();
-            }
-            Message::RemoveSavedModel(index) => {
-                self.remove_saved_model(index);
-            }
-            Message::OpenSystemPromptModal => {
-                self.open_system_prompt_modal();
-            }
-            Message::SystemPromptEdited(action) => {
-                self.edit_system_prompt(action);
-            }
-            Message::SaveSystemPrompt => {
-                self.save_system_prompt();
-            }
-            Message::TestConnection => {
-                return self.test_connection();
-            }
-            Message::ConnectionTestFinished(result) => {
-                self.finish_connection_test(result);
-            }
-            Message::SaveSettings => {
-                self.save_settings_and_close();
-            }
-            Message::TogglePanel => {
-                return self.toggle_panel();
-            }
-            Message::EscapePressed(id) => {
-                return self.handle_escape_pressed(id);
-            }
-            Message::PanelClosed(id) => {
-                return self.handle_panel_closed(id);
-            }
-        }
-        Task::none()
+        self.handle_message(message)
     }
 
     fn style(&self) -> Option<cosmic::iced::theme::Style> {
@@ -790,80 +442,6 @@ impl cosmic::Application for AppModel {
 }
 
 impl AppModel {
-    fn default_state() -> Self {
-        let (provider_events_tx, provider_events_rx) = unbounded_channel();
-        let provider_events_rx = Arc::new(Mutex::new(provider_events_rx));
-        let _ = PROVIDER_EVENTS_RX.get_or_init(|| provider_events_rx.clone());
-
-        Self {
-            core: Core::default(),
-            panel_window: None,
-            panel_requested_open: false,
-            config: Config::default(),
-            panel_view: PanelView::Chat,
-            state: AppState::default(),
-            composer_content: widget::text_editor::Content::new(),
-            composer_editor_id: widget::Id::unique(),
-            editing_message_id: None,
-            editing_content: widget::text_editor::Content::new(),
-            editing_editor_id: widget::Id::unique(),
-            messages_scroll_id: widget::Id::unique(),
-            messages_bottom_distance: 0.0,
-            assistant_markdown: HashMap::new(),
-            rename_chat_id: None,
-            rename_input: String::new(),
-            hovered_chat_id: None,
-            hovered_message_id: None,
-            copied_target: None,
-            message_view_content: HashMap::new(),
-            message_view_text: HashMap::new(),
-            settings_form: SettingsForm::default(),
-            settings_modal: None,
-            add_model_provider_index: ProviderKind::OpenRouter.index(),
-            add_model_name: String::new(),
-            system_prompt_content: widget::text_editor::Content::new(),
-            system_prompt_editor_id: widget::Id::unique(),
-            connection_test_state: ConnectionTestState::Idle,
-            provider_client: Client::new(),
-            provider_events_tx,
-            provider_task: None,
-            inflight_request: None,
-            chat_error: None,
-            loading_chat_id: None,
-            loading_phase: 0,
-            next_request_id: 1,
-            status: None,
-            transient_chat_notice: None,
-        }
-    }
-
-}
-
-fn provider_events_subscription() -> Subscription<provider::ProviderEvent> {
-    Subscription::run_with("provider-events", |_| {
-        stream::channel(
-            100,
-            |mut output: futures::channel::mpsc::Sender<provider::ProviderEvent>| async move {
-                loop {
-                    let Some(rx) = PROVIDER_EVENTS_RX.get().cloned() else {
-                        futures::future::pending::<()>().await;
-                        continue;
-                    };
-
-                    let next = {
-                        let mut rx = rx.lock().await;
-                        rx.recv().await
-                    };
-
-                    if let Some(event) = next {
-                        let _ = output.send(event).await;
-                    } else {
-                        futures::future::pending::<()>().await;
-                    }
-                }
-            },
-        )
-    })
 }
 
 fn summarize_title(prompt: &str) -> String {
