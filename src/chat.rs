@@ -5,6 +5,14 @@ use std::collections::HashSet;
 use std::fmt;
 use std::time::{SystemTime, UNIX_EPOCH};
 
+pub const DEFAULT_RESPONSE_START_TIMEOUT_SECS: u64 = 20;
+pub const MIN_RESPONSE_START_TIMEOUT_SECS: u64 = 5;
+pub const MAX_RESPONSE_START_TIMEOUT_SECS: u64 = 120;
+
+fn default_response_start_timeout_secs() -> u64 {
+    DEFAULT_RESPONSE_START_TIMEOUT_SECS
+}
+
 #[derive(Debug, Clone, Copy, Default, Eq, PartialEq, Hash, Serialize, Deserialize)]
 pub enum ProviderKind {
     #[default]
@@ -161,6 +169,8 @@ pub struct AppSettings {
     pub default_model: Option<SavedModel>,
     pub system_prompt: String,
     pub context_message_limit: usize,
+    #[serde(default = "default_response_start_timeout_secs")]
+    pub response_start_timeout_secs: u64,
     #[serde(default, skip_serializing, alias = "openrouter_model")]
     legacy_openrouter_model: String,
     #[serde(default, skip_serializing, alias = "lmstudio_model")]
@@ -223,6 +233,10 @@ impl AppSettings {
         if let Some(default_model) = &self.default_model {
             self.provider = default_model.provider;
         }
+
+        self.response_start_timeout_secs = self
+            .response_start_timeout_secs
+            .clamp(MIN_RESPONSE_START_TIMEOUT_SECS, MAX_RESPONSE_START_TIMEOUT_SECS);
     }
 
     pub fn active_model(&self) -> &str {
@@ -244,6 +258,7 @@ impl Default for AppSettings {
             default_model: None,
             system_prompt: "You are a concise assistant integrated into COSMIC.".into(),
             context_message_limit: 10,
+            response_start_timeout_secs: DEFAULT_RESPONSE_START_TIMEOUT_SECS,
             legacy_openrouter_model: String::new(),
             legacy_lmstudio_model: String::new(),
         }

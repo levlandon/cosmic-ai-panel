@@ -8,7 +8,6 @@ use serde_json::Value;
 use std::time::Duration;
 use tokio::sync::mpsc::UnboundedSender;
 
-const STREAM_START_TIMEOUT: Duration = Duration::from_secs(8);
 const EMPTY_RESPONSE_ERROR: &str = "Empty response from provider";
 const PROVIDER_TIMEOUT_ERROR: &str = "Provider timeout";
 const MALFORMED_RESPONSE_ERROR: &str = "Malformed response from provider";
@@ -20,6 +19,7 @@ pub struct ProviderRequest {
     pub api_key: Option<String>,
     pub model: String,
     pub messages: Vec<ProviderMessage>,
+    pub response_start_timeout_secs: u64,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -109,6 +109,7 @@ pub fn build_request(
         api_key,
         model,
         messages,
+        response_start_timeout_secs: settings.response_start_timeout_secs,
     })
 }
 
@@ -141,6 +142,7 @@ pub async fn test_connection(
     provider: ProviderKind,
     endpoint_or_base_url: String,
     api_key: Option<String>,
+    response_start_timeout_secs: u64,
 ) -> Result<(), String> {
     let (endpoint, api_key) = match provider {
         ProviderKind::OpenRouter => {
@@ -163,7 +165,10 @@ pub async fn test_connection(
         request = request.bearer_auth(api_key);
     }
 
-    let response = tokio::time::timeout(Duration::from_secs(8), request.send())
+    let response = tokio::time::timeout(
+        Duration::from_secs(response_start_timeout_secs),
+        request.send(),
+    )
         .await
         .map_err(|_| "Connection failed".to_string())?
         .map_err(|error| format!("Connection failed: {error}"))?;
@@ -186,6 +191,7 @@ async fn stream_chat_inner(
     request: &ProviderRequest,
     tx: &UnboundedSender<ProviderEvent>,
 ) -> Result<(), String> {
+    let response_start_timeout = Duration::from_secs(request.response_start_timeout_secs);
     let mut builder = client
         .post(&request.endpoint)
         .json(&ChatCompletionsRequest {
@@ -207,11 +213,12 @@ async fn stream_chat_inner(
             .header("X-Title", "Cosmic AI Panel");
     }
 
-    let response = tokio::time::timeout(STREAM_START_TIMEOUT, builder.send())
+    let response = tokio::time::timeout(response_start_timeout, builder.send())
         .await
         .map_err(|_| {
             log_provider_warning(format!(
-                "stream start timeout while waiting for response headers (chat_id={chat_id}, request_id={request_id})"
+                "stream start timeout while waiting for response headers (chat_id={chat_id}, request_id={request_id}, timeout={}s)",
+                request.response_start_timeout_secs
             ));
             PROVIDER_TIMEOUT_ERROR.to_string()
         })?
@@ -229,7 +236,7 @@ async fn stream_chat_inner(
     let mut buffer = String::new();
     let mut has_assistant_text = false;
 
-    match tokio::time::timeout(STREAM_START_TIMEOUT, stream.next()).await {
+    match tokio::time::timeout(response_start_timeout, stream.next()).await {
         Ok(Some(chunk)) => {
             let chunk = chunk.map_err(|error| format!("Stream error: {error}"))?;
             buffer.push_str(&String::from_utf8_lossy(&chunk));
@@ -249,7 +256,8 @@ async fn stream_chat_inner(
         }
         Err(_) => {
             log_provider_warning(format!(
-                "stream start timeout while waiting for first chunk (chat_id={chat_id}, request_id={request_id})"
+                "stream start timeout while waiting for first chunk (chat_id={chat_id}, request_id={request_id}, timeout={}s)",
+                request.response_start_timeout_secs
             ));
             return Err(PROVIDER_TIMEOUT_ERROR.into());
         }

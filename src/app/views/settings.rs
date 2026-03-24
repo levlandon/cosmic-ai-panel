@@ -49,6 +49,10 @@ impl AppModel {
                     .spacing(spacing.space_s)
                     .width(Length::Fill),
                 ))
+                .add(widget::settings::item(
+                    "Response start timeout",
+                    self.response_start_timeout_control(),
+                ))
                 .add_maybe(self.settings_connection_status()),
             ProviderKind::LmStudio => widget::settings::section()
                 .title("Provider")
@@ -70,6 +74,10 @@ impl AppModel {
                     ]
                     .spacing(spacing.space_s)
                     .width(Length::Fill),
+                ))
+                .add(widget::settings::item(
+                    "Response start timeout",
+                    self.response_start_timeout_control(),
                 ))
                 .add_maybe(self.settings_connection_status()),
         };

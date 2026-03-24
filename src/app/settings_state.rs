@@ -19,6 +19,12 @@ pub(in crate::app) enum ConnectionTestState {
     Failed(String),
 }
 
+#[derive(Debug, Clone, Copy, Default)]
+pub(in crate::app) struct SettingsValidation {
+    pub(in crate::app) context_limit_valid: bool,
+    pub(in crate::app) response_start_timeout_valid: bool,
+}
+
 #[derive(Debug, Clone, Default)]
 pub(in crate::app) struct SettingsForm {
     pub(in crate::app) provider_index: usize,
@@ -28,6 +34,7 @@ pub(in crate::app) struct SettingsForm {
     pub(in crate::app) default_model: Option<SavedModel>,
     pub(in crate::app) system_prompt: String,
     pub(in crate::app) context_message_limit: String,
+    pub(in crate::app) response_start_timeout_secs: String,
 }
 
 impl SettingsForm {
@@ -40,6 +47,7 @@ impl SettingsForm {
             default_model: settings.default_model.clone(),
             system_prompt: settings.system_prompt.clone(),
             context_message_limit: settings.context_message_limit.to_string(),
+            response_start_timeout_secs: settings.response_start_timeout_secs.to_string(),
         }
     }
 
@@ -123,7 +131,10 @@ impl SettingsForm {
         }
     }
 
-    pub(in crate::app) fn apply_to_settings(&self, settings: &mut AppSettings) -> bool {
+    pub(in crate::app) fn apply_to_settings(
+        &self,
+        settings: &mut AppSettings,
+    ) -> SettingsValidation {
         settings.provider = self.provider();
         settings.openrouter_api_key = self.openrouter_api_key.trim().to_string();
         settings.lmstudio_base_url = self.lmstudio_base_url.trim().to_string();
@@ -132,13 +143,20 @@ impl SettingsForm {
         settings.system_prompt = self.system_prompt.clone();
 
         let parsed_context_limit = self.context_message_limit.trim().parse::<usize>().ok();
+        let parsed_response_start_timeout = self.response_start_timeout_secs.trim().parse::<u64>().ok();
 
         if let Some(limit) = parsed_context_limit {
             settings.context_message_limit = limit;
         }
+        if let Some(timeout) = parsed_response_start_timeout {
+            settings.response_start_timeout_secs = timeout;
+        }
 
         settings.normalize();
-        parsed_context_limit.is_some()
+        SettingsValidation {
+            context_limit_valid: parsed_context_limit.is_some(),
+            response_start_timeout_valid: parsed_response_start_timeout.is_some(),
+        }
     }
 }
 
@@ -175,5 +193,43 @@ impl Default for SettingsUiState {
             system_prompt_editor_id: widget::Id::unique(),
             connection_test_state: ConnectionTestState::Idle,
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::chat::{
+        AppSettings, DEFAULT_RESPONSE_START_TIMEOUT_SECS, MAX_RESPONSE_START_TIMEOUT_SECS,
+    };
+
+    #[test]
+    fn apply_to_settings_clamps_response_start_timeout() {
+        let mut settings = AppSettings::default();
+        let mut form = SettingsForm::from_settings(&settings);
+        form.response_start_timeout_secs = "999".into();
+
+        let validation = form.apply_to_settings(&mut settings);
+
+        assert!(validation.response_start_timeout_valid);
+        assert_eq!(
+            settings.response_start_timeout_secs,
+            MAX_RESPONSE_START_TIMEOUT_SECS
+        );
+    }
+
+    #[test]
+    fn apply_to_settings_rejects_non_numeric_response_start_timeout() {
+        let mut settings = AppSettings::default();
+        let mut form = SettingsForm::from_settings(&settings);
+        form.response_start_timeout_secs = "slow".into();
+
+        let validation = form.apply_to_settings(&mut settings);
+
+        assert!(!validation.response_start_timeout_valid);
+        assert_eq!(
+            settings.response_start_timeout_secs,
+            DEFAULT_RESPONSE_START_TIMEOUT_SECS
+        );
     }
 }

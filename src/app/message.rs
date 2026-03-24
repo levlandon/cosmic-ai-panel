@@ -50,6 +50,7 @@ pub enum Message {
     OpenRouterKeyChanged(String),
     LmStudioUrlChanged(String),
     ContextLimitChanged(String),
+    ResponseStartTimeoutChanged(String),
     DefaultModelSelected(usize),
     ActiveModelSelected(usize),
     OpenAddModelModal,

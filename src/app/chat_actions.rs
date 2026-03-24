@@ -47,13 +47,7 @@ impl AppModel {
                 self.chat_error = Some(ChatErrorState {
                     chat_id: active_chat_id,
                     message: error,
-                    request: ProviderRequest {
-                        provider: self.state.settings.provider,
-                        endpoint: String::new(),
-                        api_key: None,
-                        model: String::new(),
-                        messages: Vec::new(),
-                    },
+                    request: self.empty_provider_request(),
                     assistant_message_id: None,
                 });
                 return cosmic::iced::widget::operation::focus(self.composer_editor_id.clone());
@@ -102,13 +96,7 @@ impl AppModel {
                 self.chat_error = Some(ChatErrorState {
                     chat_id,
                     message: error,
-                    request: ProviderRequest {
-                        provider: self.state.settings.provider,
-                        endpoint: String::new(),
-                        api_key: None,
-                        model: String::new(),
-                        messages: Vec::new(),
-                    },
+                    request: self.empty_provider_request(),
                     assistant_message_id: None,
                 });
                 self.persist_state();
@@ -202,13 +190,7 @@ impl AppModel {
                 self.chat_error = Some(ChatErrorState {
                     chat_id,
                     message: error,
-                    request: ProviderRequest {
-                        provider: self.state.settings.provider,
-                        endpoint: String::new(),
-                        api_key: None,
-                        model: String::new(),
-                        messages: Vec::new(),
-                    },
+                    request: self.empty_provider_request(),
                     assistant_message_id: None,
                 });
                 return Task::none();

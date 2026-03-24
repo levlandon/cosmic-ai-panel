@@ -70,6 +70,31 @@ impl AppModel {
         .into()
     }
 
+    pub(in crate::app) fn response_start_timeout_control(&self) -> Element<'_, Message> {
+        let mut content = column![widget::text_input::text_input(
+            "20",
+            &self.settings_ui.form.response_start_timeout_secs,
+        )
+        .on_input(Message::ResponseStartTimeoutChanged)]
+        .spacing(4);
+
+        if self
+            .settings_ui
+            .form
+            .response_start_timeout_secs
+            .trim()
+            .parse::<u64>()
+            .is_err()
+        {
+            content = content.push(
+                widget::text::caption("Enter a whole number of seconds")
+                    .class(cosmic::theme::Text::Color(Color::from_rgb(1.0, 0.42, 0.42))),
+            );
+        }
+
+        content.into()
+    }
+
     pub(in crate::app) fn settings_modal_overlay(&self) -> Option<Element<'_, Message>> {
         let spacing = cosmic::theme::spacing();
 

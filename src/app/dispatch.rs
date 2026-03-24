@@ -140,6 +140,10 @@ impl AppModel {
                 self.set_context_limit(value);
                 Task::none()
             }
+            Message::ResponseStartTimeoutChanged(value) => {
+                self.set_response_start_timeout(value);
+                Task::none()
+            }
             Message::DefaultModelSelected(index) => {
                 self.select_default_model(index);
                 Task::none()

@@ -35,6 +35,11 @@ impl AppModel {
         self.settings_ui.form.context_message_limit = value;
     }
 
+    pub(in crate::app) fn set_response_start_timeout(&mut self, value: String) {
+        self.settings_ui.form.response_start_timeout_secs = value;
+        self.settings_ui.connection_test_state = ConnectionTestState::Idle;
+    }
+
     pub(in crate::app) fn select_default_model(&mut self, index: usize) {
         self.settings_ui.form.select_default_model(index);
     }
@@ -105,10 +110,24 @@ impl AppModel {
         let provider = self.settings_ui.form.provider();
         let endpoint = self.settings_ui.form.lmstudio_base_url.clone();
         let api_key = Some(self.settings_ui.form.openrouter_api_key.clone());
+        let response_start_timeout_secs = self
+            .settings_ui
+            .form
+            .response_start_timeout_secs
+            .trim()
+            .parse::<u64>()
+            .unwrap_or(self.state.settings.response_start_timeout_secs);
 
         cosmic::task::future(async move {
             Message::ConnectionTestFinished(
-                provider::test_connection(client, provider, endpoint, api_key).await,
+                provider::test_connection(
+                    client,
+                    provider,
+                    endpoint,
+                    api_key,
+                    response_start_timeout_secs,
+                )
+                .await,
             )
         })
     }
@@ -121,11 +140,21 @@ impl AppModel {
     }
 
     pub(in crate::app) fn save_settings_and_close(&mut self) {
-        let context_limit_valid = self.settings_ui.form.apply_to_settings(&mut self.state.settings);
-        if !context_limit_valid {
+        let validation = self.settings_ui.form.apply_to_settings(&mut self.state.settings);
+        let mut invalid_messages = Vec::new();
+
+        if !validation.context_limit_valid {
             self.settings_ui.form.context_message_limit =
                 self.state.settings.context_message_limit.to_string();
-            self.status = Some("Context limit must be a whole number.".into());
+            invalid_messages.push("Context limit must be a whole number.");
+        }
+        if !validation.response_start_timeout_valid {
+            self.settings_ui.form.response_start_timeout_secs =
+                self.state.settings.response_start_timeout_secs.to_string();
+            invalid_messages.push("Response start timeout must be a whole number of seconds.");
+        }
+        if !invalid_messages.is_empty() {
+            self.status = Some(invalid_messages.join(" "));
         }
         if let Err(error) = secrets::save_openrouter_api_key(&self.state.settings.openrouter_api_key)
         {

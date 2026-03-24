@@ -3,6 +3,17 @@
 use super::*;
 
 impl AppModel {
+    pub(in crate::app) fn empty_provider_request(&self) -> ProviderRequest {
+        ProviderRequest {
+            provider: self.state.settings.provider,
+            endpoint: String::new(),
+            api_key: None,
+            model: String::new(),
+            messages: Vec::new(),
+            response_start_timeout_secs: self.state.settings.response_start_timeout_secs,
+        }
+    }
+
     pub(in crate::app) fn build_provider_request(&self, chat_id: u64) -> Result<ProviderRequest, String> {
         let chat = self
             .state
@@ -58,13 +69,7 @@ impl AppModel {
                 self.chat_error = Some(ChatErrorState {
                     chat_id,
                     message,
-                    request: ProviderRequest {
-                        provider: self.state.settings.provider,
-                        endpoint: String::new(),
-                        api_key: None,
-                        model: String::new(),
-                        messages: Vec::new(),
-                    },
+                    request: self.empty_provider_request(),
                     assistant_message_id: error.assistant_message_id,
                 });
                 return Task::none();
