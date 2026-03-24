@@ -1,13 +1,51 @@
 // SPDX-License-Identifier: MPL-2.0
-//! Settings screen rendering and modal overlays.
+//! Settings screen rendering split into provider, personalization, and skills tabs.
 
-use super::super::*;
 use super::super::style::*;
+use super::super::*;
 use crate::fl;
 use cosmic::iced_widget::{column, container, row, scrollable, stack};
 
 impl AppModel {
     pub(in crate::app) fn settings_screen(&self) -> Element<'_, Message> {
+        let spacing = cosmic::theme::spacing();
+        let actions = row![
+            button::standard(fl!("save")).on_press(Message::SaveSettings),
+            button::text(fl!("cancel")).on_press(Message::CloseSettings),
+        ]
+        .spacing(spacing.space_s);
+
+        let tab_content = match self.settings_ui.active_tab {
+            SettingsTab::Provider => self.provider_settings_content(),
+            SettingsTab::Personalization => self.personalization_settings_content(),
+            SettingsTab::Skills => self.skills_settings_content(),
+        };
+
+        let base = scrollable(
+            column![
+                button::icon(widget::icon::from_name("go-previous-symbolic").size(16))
+                    .on_press(Message::CloseSettings),
+                self.settings_tab_bar(),
+                tab_content,
+                actions,
+            ]
+            .spacing(spacing.space_m)
+            .padding(spacing.space_m)
+            .width(Length::Fill),
+        )
+        .height(Length::Fill);
+
+        if let Some(modal) = self.settings_modal_overlay() {
+            stack![base, modal]
+                .width(Length::Fill)
+                .height(Length::Fill)
+                .into()
+        } else {
+            base.into()
+        }
+    }
+
+    fn provider_settings_content(&self) -> Element<'_, Message> {
         let spacing = cosmic::theme::spacing();
         let provider_options = SettingsForm::provider_labels();
         let mut test_button = button::standard("Test connection");
@@ -74,20 +112,83 @@ impl AppModel {
                 .add_maybe(self.settings_connection_status()),
         };
 
+        let timeout_invalid = self
+            .settings_ui
+            .form
+            .timeout_seconds
+            .trim()
+            .parse::<u64>()
+            .ok()
+            .filter(|value| *value > 0)
+            .is_none();
+        let retry_attempts_invalid = self
+            .settings_ui
+            .form
+            .retry_attempts
+            .trim()
+            .parse::<u8>()
+            .is_err();
+        let retry_delay_invalid = self
+            .settings_ui
+            .form
+            .retry_delay_seconds
+            .trim()
+            .parse::<u64>()
+            .is_err();
+        let context_limit_invalid = self
+            .settings_ui
+            .form
+            .context_message_limit
+            .trim()
+            .parse::<usize>()
+            .is_err();
+
+        let mut network_section = widget::settings::section()
+            .title("Network")
+            .add(widget::settings::item(
+                "Timeout (seconds)",
+                widget::text_input::text_input("20", &self.settings_ui.form.timeout_seconds)
+                    .on_input(Message::ProviderTimeoutChanged),
+            ))
+            .add(widget::settings::item(
+                "Retry attempts",
+                widget::text_input::text_input("1", &self.settings_ui.form.retry_attempts)
+                    .on_input(Message::ProviderRetryAttemptsChanged),
+            ))
+            .add(widget::settings::item(
+                "Retry delay (seconds)",
+                widget::text_input::text_input("2", &self.settings_ui.form.retry_delay_seconds)
+                    .on_input(Message::ProviderRetryDelayChanged),
+            ));
+
+        if timeout_invalid {
+            network_section =
+                network_section.add(invalid_caption("Timeout must be a positive whole number"));
+        }
+        if retry_attempts_invalid {
+            network_section =
+                network_section.add(invalid_caption("Retry attempts must be a whole number"));
+        }
+        if retry_delay_invalid {
+            network_section =
+                network_section.add(invalid_caption("Retry delay must be a whole number"));
+        }
+
         let mut saved_models_list = widget::column().spacing(spacing.space_s);
         for (index, model) in self.settings_ui.form.saved_models.iter().enumerate() {
             saved_models_list = saved_models_list.push(self.saved_model_row(index, model));
         }
 
-        let saved_models_list: Element<'_, Message> = if self.settings_ui.form.saved_models.len() > 5 {
-            scrollable(saved_models_list)
-                .class(cosmic::style::iced::Scrollable::Minimal)
-                .direction(thin_vertical_scrollbar())
-                .height(Length::Fixed(280.0))
-                .into()
-        } else {
-            saved_models_list.into()
-        };
+        let saved_models_list: Element<'_, Message> =
+            if self.settings_ui.form.saved_models.len() > 5 {
+                scrollable(saved_models_list)
+                    .class(cosmic::style::iced::Scrollable::Minimal)
+                    .direction(thin_vertical_scrollbar())
+                    .height(Length::Fixed(280.0))
+                    .into()
+            } else {
+                saved_models_list.into()
+            };
 
         let saved_models_section = widget::settings::section()
             .title("Saved models")
@@ -115,22 +216,6 @@ impl AppModel {
                 ))
         };
 
-        let context_limit_invalid = self
-            .settings_ui
-            .form
-            .context_message_limit
-            .trim()
-            .parse::<usize>()
-            .is_err();
-
-        let prompt_section =
-            widget::settings::section()
-                .title("Prompt")
-                .add(widget::settings::item(
-                    "System prompt",
-                    button::standard("Edit system prompt").on_press(Message::OpenSystemPromptModal),
-                ));
-
         let mut context_section = widget::settings::section()
             .title("Context")
             .add(widget::settings::item(
@@ -148,44 +233,113 @@ impl AppModel {
             );
 
         if context_limit_invalid {
-            context_section = context_section.add(
-                widget::text::caption("Enter a whole number")
-                    .class(cosmic::theme::Text::Color(Color::from_rgb(1.0, 0.42, 0.42))),
-            );
+            context_section =
+                context_section.add(invalid_caption("Context limit must be a whole number"));
         }
 
-        let actions = row![
-            button::standard(fl!("save")).on_press(Message::SaveSettings),
-            button::text(fl!("cancel")).on_press(Message::CloseSettings),
-        ]
-        .spacing(spacing.space_s);
+        widget::settings::view_column(vec![
+            provider_section.into(),
+            network_section.into(),
+            saved_models_section.into(),
+            default_model_section.into(),
+            context_section.into(),
+        ])
+        .into()
+    }
 
-        let base = scrollable(
-            column![
-                button::icon(widget::icon::from_name("go-previous-symbolic").size(16))
-                    .on_press(Message::CloseSettings),
-                widget::settings::view_column(vec![
-                    provider_section.into(),
-                    saved_models_section.into(),
-                    default_model_section.into(),
-                    prompt_section.into(),
-                    context_section.into(),
-                    actions.into(),
-                ]),
-            ]
-            .spacing(spacing.space_m)
-            .padding(spacing.space_m)
-            .width(Length::Fill),
-        )
-        .height(Length::Fill);
+    fn personalization_settings_content(&self) -> Element<'_, Message> {
+        let spacing = cosmic::theme::spacing();
+        let prompt_section =
+            widget::settings::section()
+                .title("System prompt")
+                .add(widget::settings::item(
+                    "Base system prompt",
+                    button::standard("Edit prompt").on_press(Message::OpenSystemPromptModal),
+                ));
 
-        if let Some(modal) = self.settings_modal_overlay() {
-            stack![base, modal]
-                .width(Length::Fill)
-                .height(Length::Fill)
+        let profile_section = widget::settings::section()
+            .title("Profile")
+            .add(widget::settings::item(
+                "Name",
+                widget::text_input::text_input("Optional", &self.settings_ui.form.profile_name)
+                    .on_input(Message::ProfileNameChanged),
+            ))
+            .add(widget::settings::item(
+                "Preferred language",
+                widget::text_input::text_input("Optional", &self.settings_ui.form.profile_language)
+                    .on_input(Message::ProfileLanguageChanged),
+            ))
+            .add(widget::settings::item(
+                "Response style",
+                widget::text_input::text_input("Optional", &self.settings_ui.form.response_style)
+                    .on_input(Message::ResponseStyleChanged),
+            ));
+
+        let mut memory_rows = widget::column().spacing(spacing.space_s);
+        for (index, item) in self.settings_ui.form.memory_items.iter().enumerate() {
+            memory_rows = memory_rows.push(self.memory_item_row(index, item));
+        }
+
+        let memory_content: Element<'_, Message> = if self.settings_ui.form.memory_items.is_empty()
+        {
+            widget::text::caption("No manual memory yet")
+                .class(cosmic::theme::Text::Color(Color::from_rgba(
+                    1.0, 1.0, 1.0, 0.56,
+                )))
                 .into()
         } else {
-            base.into()
-        }
+            memory_rows.into()
+        };
+
+        let memory_section = widget::settings::section()
+            .title("Memory")
+            .add(memory_content)
+            .add(button::standard("Add memory item").on_press(Message::AddMemoryItem));
+
+        let reset_section = widget::settings::section()
+            .title("Reset")
+            .add(button::standard("Reset personalization").on_press(Message::ResetPersonalization));
+
+        widget::settings::view_column(vec![
+            prompt_section.into(),
+            profile_section.into(),
+            memory_section.into(),
+            reset_section.into(),
+        ])
+        .into()
     }
+
+    fn skills_settings_content(&self) -> Element<'_, Message> {
+        let section = widget::settings::section()
+            .title("Skills")
+            .add(widget::settings::item(
+                "datetime",
+                widget::toggler(self.settings_ui.form.skill_datetime)
+                    .on_toggle(Message::SkillDatetimeToggled),
+            ))
+            .add(widget::settings::item(
+                "clipboard",
+                widget::toggler(self.settings_ui.form.skill_clipboard)
+                    .on_toggle(Message::SkillClipboardToggled),
+            ))
+            .add(widget::settings::item(
+                "filesystem",
+                widget::toggler(self.settings_ui.form.skill_filesystem)
+                    .on_toggle(Message::SkillFilesystemToggled),
+            ))
+            .add(
+                widget::text::caption("UI placeholder only. Backend execution is not enabled yet.")
+                    .class(cosmic::theme::Text::Color(Color::from_rgba(
+                        1.0, 1.0, 1.0, 0.56,
+                    ))),
+            );
+
+        widget::settings::view_column(vec![section.into()]).into()
+    }
+}
+
+fn invalid_caption(content: &'static str) -> Element<'static, Message> {
+    widget::text::caption(content)
+        .class(cosmic::theme::Text::Color(Color::from_rgb(1.0, 0.42, 0.42)))
+        .into()
 }

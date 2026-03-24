@@ -1,11 +1,29 @@
 // SPDX-License-Identifier: MPL-2.0
-//! Settings-specific reusable rows and modal overlays.
+//! Settings-specific reusable rows, tab controls, and modal overlays.
 
-use super::super::*;
 use super::super::style::*;
+use super::super::*;
 use cosmic::iced_widget::{column, container, row};
 
 impl AppModel {
+    pub(in crate::app) fn settings_tab_bar(&self) -> Element<'_, Message> {
+        let spacing = cosmic::theme::spacing();
+        let mut tabs = row![].spacing(spacing.space_xs).width(Length::Fill);
+
+        for tab in SettingsTab::ALL {
+            let button = if self.settings_ui.active_tab == tab {
+                button::standard(tab.label())
+            } else {
+                button::text(tab.label())
+            }
+            .on_press(Message::SettingsTabSelected(tab));
+
+            tabs = tabs.push(button);
+        }
+
+        tabs.into()
+    }
+
     pub(in crate::app) fn settings_connection_status(&self) -> Option<Element<'_, Message>> {
         let text = match &self.settings_ui.connection_test_state {
             ConnectionTestState::Idle => return None,
@@ -70,6 +88,29 @@ impl AppModel {
         .into()
     }
 
+    pub(in crate::app) fn memory_item_row<'a>(
+        &'a self,
+        index: usize,
+        value: &'a str,
+    ) -> Element<'a, Message> {
+        let spacing = cosmic::theme::spacing();
+
+        container(
+            row![
+                widget::text_input::text_input("Remember this about the user", value)
+                    .on_input(move |next| Message::MemoryItemChanged(index, next))
+                    .width(Length::Fill),
+                button::icon(widget::icon::from_name("window-close-symbolic").size(14))
+                    .on_press(Message::RemoveMemoryItem(index)),
+            ]
+            .spacing(spacing.space_s)
+            .align_y(Alignment::Center),
+        )
+        .padding([spacing.space_s, spacing.space_m])
+        .class(chat_list_card_class())
+        .into()
+    }
+
     pub(in crate::app) fn settings_modal_overlay(&self) -> Option<Element<'_, Message>> {
         let spacing = cosmic::theme::spacing();
 
@@ -124,7 +165,7 @@ impl AppModel {
             }
             Some(SettingsModal::SystemPrompt) => container(
                 column![
-                    widget::text::heading("Edit system prompt"),
+                    widget::text::heading("Edit base system prompt"),
                     container(
                         widget::text_editor(&self.settings_ui.system_prompt_content)
                             .id(self.settings_ui.system_prompt_editor_id.clone())

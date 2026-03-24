@@ -1,8 +1,8 @@
 // SPDX-License-Identifier: MPL-2.0
 //! Chat list rendering and row-level chat actions.
 
-use super::super::*;
 use super::super::style::*;
+use super::super::*;
 use crate::fl;
 use cosmic::iced_widget::{column, container, row, scrollable, text};
 

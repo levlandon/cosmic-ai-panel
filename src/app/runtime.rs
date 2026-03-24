@@ -6,7 +6,7 @@ impl AppModel {
     pub(in crate::app) fn init_app(core: Core) -> (Self, Task<cosmic::Action<Message>>) {
         let mut state = storage::load_state();
         state.settings.normalize();
-        if let Some(default_model) = state.settings.default_model.clone() {
+        if let Some(default_model) = state.settings.provider.default_model.clone() {
             for chat in &mut state.chats {
                 if chat.model.trim().is_empty() {
                     chat.provider = default_model.provider;
@@ -18,14 +18,19 @@ impl AppModel {
 
         match secrets::load_openrouter_api_key() {
             Ok(Some(api_key)) => {
-                state.settings.openrouter_api_key = api_key;
+                state.settings.provider.openrouter_api_key = api_key;
             }
             Ok(None) => {
-                let legacy_key = state.settings.openrouter_api_key.trim().to_string();
+                let legacy_key = state
+                    .settings
+                    .provider
+                    .openrouter_api_key
+                    .trim()
+                    .to_string();
                 if !legacy_key.is_empty() {
                     match secrets::save_openrouter_api_key(&legacy_key) {
                         Ok(()) => {
-                            state.settings.openrouter_api_key = legacy_key;
+                            state.settings.provider.openrouter_api_key = legacy_key;
                             if let Err(error) = storage::save_state(&state) {
                                 status = Some(format!("{}: {error}", fl!("status-save-failed")));
                             }
@@ -53,11 +58,11 @@ impl AppModel {
                 <Self as cosmic::Application>::APP_ID,
                 Config::VERSION,
             )
-                .map(|context| match Config::get_entry(&context) {
-                    Ok(config) => config,
-                    Err((_errors, config)) => config,
-                })
-                .unwrap_or_default(),
+            .map(|context| match Config::get_entry(&context) {
+                Ok(config) => config,
+                Err((_errors, config)) => config,
+            })
+            .unwrap_or_default(),
             ..Self::default_state()
         };
         app.rebuild_markdown_cache();

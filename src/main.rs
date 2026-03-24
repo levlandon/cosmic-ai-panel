@@ -5,6 +5,7 @@ mod chat;
 mod config;
 mod i18n;
 mod provider;
+mod runtime;
 mod secrets;
 mod storage;
 

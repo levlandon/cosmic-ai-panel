@@ -155,7 +155,7 @@ impl AppModel {
         let chat_id = self.state.next_chat_id;
         self.state.next_chat_id += 1;
 
-        let provider = self.state.settings.provider;
+        let provider = self.state.settings.provider.active_provider;
         let model = self.state.settings.active_model().to_string();
 
         self.state
@@ -266,6 +266,7 @@ impl AppModel {
     pub(in crate::app) fn active_model_options(&self) -> Vec<String> {
         self.state
             .settings
+            .provider
             .saved_models
             .iter()
             .map(SavedModel::chat_dropdown_label)
@@ -277,6 +278,7 @@ impl AppModel {
         let selected = SavedModel::normalized(chat.provider, &chat.model)?;
         self.state
             .settings
+            .provider
             .saved_models
             .iter()
             .position(|model| model == &selected)

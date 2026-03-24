@@ -1,8 +1,8 @@
 // SPDX-License-Identifier: MPL-2.0
 //! Lightweight feedback widgets such as loading and error notices.
 
-use super::super::*;
 use super::super::style::*;
+use super::super::*;
 use cosmic::iced_widget::{container, row, text};
 
 impl AppModel {

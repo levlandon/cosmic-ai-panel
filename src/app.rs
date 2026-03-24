@@ -46,7 +46,8 @@ use cosmic::widget::{self, button, header_bar};
 use message::Message;
 use reqwest::Client;
 pub(in crate::app) use settings_state::{
-    ConnectionTestState, SettingsForm, SettingsModal, SettingsUiState,
+    ConnectionTestState, SettingsForm, SettingsModal, SettingsTab, SettingsUiState,
+    SettingsValidationError,
 };
 use std::cell::Cell;
 use std::collections::{HashMap, HashSet};

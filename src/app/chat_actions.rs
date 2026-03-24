@@ -48,11 +48,16 @@ impl AppModel {
                     chat_id: active_chat_id,
                     message: error,
                     request: ProviderRequest {
-                        provider: self.state.settings.provider,
+                        provider: self.state.settings.provider.active_provider,
                         endpoint: String::new(),
                         api_key: None,
                         model: String::new(),
                         messages: Vec::new(),
+                        reliability: provider::ProviderReliability {
+                            timeout_seconds: self.state.settings.provider.timeout_seconds,
+                            retry_attempts: self.state.settings.provider.retry_attempts,
+                            retry_delay_seconds: self.state.settings.provider.retry_delay_seconds,
+                        },
                     },
                     assistant_message_id: None,
                 });
@@ -68,7 +73,10 @@ impl AppModel {
         ])
     }
 
-    pub(in crate::app) fn regenerate_last_assistant(&mut self, message_id: u64) -> Task<cosmic::Action<Message>> {
+    pub(in crate::app) fn regenerate_last_assistant(
+        &mut self,
+        message_id: u64,
+    ) -> Task<cosmic::Action<Message>> {
         if self.inflight_request.is_some() {
             return Task::none();
         }
@@ -103,11 +111,16 @@ impl AppModel {
                     chat_id,
                     message: error,
                     request: ProviderRequest {
-                        provider: self.state.settings.provider,
+                        provider: self.state.settings.provider.active_provider,
                         endpoint: String::new(),
                         api_key: None,
                         model: String::new(),
                         messages: Vec::new(),
+                        reliability: provider::ProviderReliability {
+                            timeout_seconds: self.state.settings.provider.timeout_seconds,
+                            retry_attempts: self.state.settings.provider.retry_attempts,
+                            retry_delay_seconds: self.state.settings.provider.retry_delay_seconds,
+                        },
                     },
                     assistant_message_id: None,
                 });
@@ -121,7 +134,10 @@ impl AppModel {
         self.scroll_messages_to_end(true)
     }
 
-    pub(in crate::app) fn edit_user_message(&mut self, message_id: u64) -> Task<cosmic::Action<Message>> {
+    pub(in crate::app) fn edit_user_message(
+        &mut self,
+        message_id: u64,
+    ) -> Task<cosmic::Action<Message>> {
         if self.inflight_request.is_some() {
             return Task::none();
         }
@@ -203,11 +219,16 @@ impl AppModel {
                     chat_id,
                     message: error,
                     request: ProviderRequest {
-                        provider: self.state.settings.provider,
+                        provider: self.state.settings.provider.active_provider,
                         endpoint: String::new(),
                         api_key: None,
                         model: String::new(),
                         messages: Vec::new(),
+                        reliability: provider::ProviderReliability {
+                            timeout_seconds: self.state.settings.provider.timeout_seconds,
+                            retry_attempts: self.state.settings.provider.retry_attempts,
+                            retry_delay_seconds: self.state.settings.provider.retry_delay_seconds,
+                        },
                     },
                     assistant_message_id: None,
                 });
@@ -219,7 +240,10 @@ impl AppModel {
         self.scroll_messages_to_end(true)
     }
 
-    pub(in crate::app) fn delete_last_assistant(&mut self, message_id: u64) -> Task<cosmic::Action<Message>> {
+    pub(in crate::app) fn delete_last_assistant(
+        &mut self,
+        message_id: u64,
+    ) -> Task<cosmic::Action<Message>> {
         if self.inflight_request.is_some() {
             return Task::none();
         }
@@ -251,7 +275,10 @@ impl AppModel {
         self.scroll_messages_to_end(false)
     }
 
-    pub(in crate::app) fn branch_conversation(&mut self, message_id: u64) -> Task<cosmic::Action<Message>> {
+    pub(in crate::app) fn branch_conversation(
+        &mut self,
+        message_id: u64,
+    ) -> Task<cosmic::Action<Message>> {
         if self.inflight_request.is_some() {
             return Task::none();
         }

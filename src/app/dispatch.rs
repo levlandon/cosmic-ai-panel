@@ -124,6 +124,10 @@ impl AppModel {
             Message::BeginUserEdit(message_id) => self.edit_user_message(message_id),
             Message::DeleteLastAssistant(message_id) => self.delete_last_assistant(message_id),
             Message::BranchConversation(message_id) => self.branch_conversation(message_id),
+            Message::SettingsTabSelected(tab) => {
+                self.select_settings_tab(tab);
+                Task::none()
+            }
             Message::ProviderSelected(index) => {
                 self.select_settings_provider(index);
                 Task::none()
@@ -134,6 +138,18 @@ impl AppModel {
             }
             Message::LmStudioUrlChanged(value) => {
                 self.set_lmstudio_url(value);
+                Task::none()
+            }
+            Message::ProviderTimeoutChanged(value) => {
+                self.set_provider_timeout(value);
+                Task::none()
+            }
+            Message::ProviderRetryAttemptsChanged(value) => {
+                self.set_provider_retry_attempts(value);
+                Task::none()
+            }
+            Message::ProviderRetryDelayChanged(value) => {
+                self.set_provider_retry_delay(value);
                 Task::none()
             }
             Message::ContextLimitChanged(value) => {
@@ -182,6 +198,46 @@ impl AppModel {
             }
             Message::SaveSystemPrompt => {
                 self.save_system_prompt();
+                Task::none()
+            }
+            Message::ProfileNameChanged(value) => {
+                self.set_profile_name(value);
+                Task::none()
+            }
+            Message::ProfileLanguageChanged(value) => {
+                self.set_profile_language(value);
+                Task::none()
+            }
+            Message::ResponseStyleChanged(value) => {
+                self.set_response_style(value);
+                Task::none()
+            }
+            Message::AddMemoryItem => {
+                self.add_memory_item();
+                Task::none()
+            }
+            Message::MemoryItemChanged(index, value) => {
+                self.set_memory_item(index, value);
+                Task::none()
+            }
+            Message::RemoveMemoryItem(index) => {
+                self.remove_memory_item(index);
+                Task::none()
+            }
+            Message::ResetPersonalization => {
+                self.reset_personalization();
+                Task::none()
+            }
+            Message::SkillDatetimeToggled(value) => {
+                self.toggle_skill_datetime(value);
+                Task::none()
+            }
+            Message::SkillClipboardToggled(value) => {
+                self.toggle_skill_clipboard(value);
+                Task::none()
+            }
+            Message::SkillFilesystemToggled(value) => {
+                self.toggle_skill_filesystem(value);
                 Task::none()
             }
             Message::TestConnection => self.test_connection(),

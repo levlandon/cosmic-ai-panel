@@ -72,10 +72,7 @@ impl AppModel {
         Task::none()
     }
 
-    pub(in crate::app) fn handle_panel_closed(
-        &mut self,
-        id: Id,
-    ) -> Task<cosmic::Action<Message>> {
+    pub(in crate::app) fn handle_panel_closed(&mut self, id: Id) -> Task<cosmic::Action<Message>> {
         if self.panel_window == Some(id) {
             self.panel_window = None;
             if self.panel_requested_open {

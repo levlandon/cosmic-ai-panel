@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: MPL-2.0
 
 use crate::chat::{AppSettings, ChatMessage, ChatRole, ChatSession, ProviderKind};
+use crate::runtime::context::builder::build_context;
 use futures_util::StreamExt;
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
@@ -8,10 +9,26 @@ use serde_json::Value;
 use std::time::Duration;
 use tokio::sync::mpsc::UnboundedSender;
 
-const STREAM_START_TIMEOUT: Duration = Duration::from_secs(8);
 const EMPTY_RESPONSE_ERROR: &str = "Empty response from provider";
 const PROVIDER_TIMEOUT_ERROR: &str = "Provider timeout";
 const MALFORMED_RESPONSE_ERROR: &str = "Malformed response from provider";
+
+#[derive(Debug, Clone, Copy, Eq, PartialEq, Serialize, Deserialize)]
+pub struct ProviderReliability {
+    pub timeout_seconds: u64,
+    pub retry_attempts: u8,
+    pub retry_delay_seconds: u64,
+}
+
+impl ProviderReliability {
+    pub fn timeout(self) -> Duration {
+        Duration::from_secs(self.timeout_seconds.max(1))
+    }
+
+    pub fn retry_delay(self) -> Duration {
+        Duration::from_secs(self.retry_delay_seconds)
+    }
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ProviderRequest {
@@ -20,6 +37,7 @@ pub struct ProviderRequest {
     pub api_key: Option<String>,
     pub model: String,
     pub messages: Vec<ProviderMessage>,
+    pub reliability: ProviderReliability,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -53,6 +71,34 @@ struct ChatCompletionsRequest<'a> {
     stream: bool,
 }
 
+#[derive(Debug, Clone, Copy, Eq, PartialEq)]
+enum FailureKind {
+    RetryableNetwork,
+    Fatal,
+}
+
+#[derive(Debug, Clone)]
+struct ProviderFailure {
+    message: String,
+    kind: FailureKind,
+}
+
+impl ProviderFailure {
+    fn fatal(message: impl Into<String>) -> Self {
+        Self {
+            message: message.into(),
+            kind: FailureKind::Fatal,
+        }
+    }
+
+    fn retryable(message: impl Into<String>) -> Self {
+        Self {
+            message: message.into(),
+            kind: FailureKind::RetryableNetwork,
+        }
+    }
+}
+
 pub fn build_request(
     settings: &AppSettings,
     session_openrouter_key: Option<&str>,
@@ -63,24 +109,25 @@ pub fn build_request(
         return Err("Set a model in Provider settings first.".into());
     }
 
+    let context = build_context(
+        &settings.base_system_prompt,
+        &settings.profile,
+        &settings.memory,
+        context_tail(&chat.messages, settings.context_message_limit),
+    );
+
     let mut messages = Vec::new();
-    let system_prompt = settings.system_prompt.trim();
-    if !system_prompt.is_empty() {
+    if let Some(system_prompt) = context.system_prompt {
         messages.push(ProviderMessage {
             role: "system".into(),
-            content: system_prompt.into(),
+            content: system_prompt,
         });
     }
 
-    let tail = context_tail(&chat.messages, settings.context_message_limit);
-    for message in tail {
-        if message.content.trim().is_empty() {
-            continue;
-        }
-
+    for message in context.history {
         messages.push(ProviderMessage {
             role: role_name(message.role).into(),
-            content: message.content.clone(),
+            content: message.content,
         });
     }
 
@@ -100,7 +147,10 @@ pub fn build_request(
                 Some(key),
             )
         }
-        ProviderKind::LmStudio => (lmstudio_chat_endpoint(&settings.lmstudio_base_url), None),
+        ProviderKind::LmStudio => (
+            lmstudio_chat_endpoint(&settings.provider.lmstudio_base_url),
+            None,
+        ),
     };
 
     Ok(ProviderRequest {
@@ -109,6 +159,11 @@ pub fn build_request(
         api_key,
         model,
         messages,
+        reliability: ProviderReliability {
+            timeout_seconds: settings.provider.timeout_seconds,
+            retry_attempts: settings.provider.retry_attempts,
+            retry_delay_seconds: settings.provider.retry_delay_seconds,
+        },
     })
 }
 
@@ -119,19 +174,35 @@ pub async fn stream_chat(
     request: ProviderRequest,
     tx: UnboundedSender<ProviderEvent>,
 ) {
-    match stream_chat_inner(client, request_id, chat_id, &request, &tx).await {
-        Ok(()) => {
-            let _ = tx.send(ProviderEvent::Finished {
-                request_id,
-                chat_id,
-            });
-        }
-        Err(error) => {
-            let _ = tx.send(ProviderEvent::Failed {
-                request_id,
-                chat_id,
-                error,
-            });
+    let max_attempts = usize::from(request.reliability.retry_attempts) + 1;
+
+    for attempt in 0..max_attempts {
+        match stream_chat_attempt(client.clone(), request_id, chat_id, &request, &tx).await {
+            Ok(()) => {
+                let _ = tx.send(ProviderEvent::Finished {
+                    request_id,
+                    chat_id,
+                });
+                return;
+            }
+            Err(error)
+                if error.kind == FailureKind::RetryableNetwork && attempt + 1 < max_attempts =>
+            {
+                log_provider_warning(format!(
+                    "retrying provider request (attempt {}/{max_attempts}, chat_id={chat_id}, request_id={request_id}): {}",
+                    attempt + 2,
+                    error.message
+                ));
+                tokio::time::sleep(request.reliability.retry_delay()).await;
+            }
+            Err(error) => {
+                let _ = tx.send(ProviderEvent::Failed {
+                    request_id,
+                    chat_id,
+                    error: error.message,
+                });
+                return;
+            }
         }
     }
 }
@@ -141,6 +212,7 @@ pub async fn test_connection(
     provider: ProviderKind,
     endpoint_or_base_url: String,
     api_key: Option<String>,
+    reliability: ProviderReliability,
 ) -> Result<(), String> {
     let (endpoint, api_key) = match provider {
         ProviderKind::OpenRouter => {
@@ -157,35 +229,47 @@ pub async fn test_connection(
         ProviderKind::LmStudio => (lmstudio_models_endpoint(&endpoint_or_base_url), None),
     };
 
-    let mut request = client.get(&endpoint);
+    let mut last_failure = None;
+    let max_attempts = usize::from(reliability.retry_attempts) + 1;
 
-    if let Some(api_key) = api_key {
-        request = request.bearer_auth(api_key);
+    for attempt in 0..max_attempts {
+        let mut request = client.get(&endpoint);
+        if let Some(api_key) = &api_key {
+            request = request.bearer_auth(api_key);
+        }
+
+        match send_with_timeout(request, reliability.timeout()).await {
+            Ok(response) => {
+                if response.status().is_success() {
+                    return Ok(());
+                }
+
+                let status = response.status();
+                let body = response.text().await.unwrap_or_default();
+                let message = extract_error_message(&body)
+                    .unwrap_or_else(|| format!("Connection failed ({status})"));
+                return Err(message);
+            }
+            Err(error)
+                if error.kind == FailureKind::RetryableNetwork && attempt + 1 < max_attempts =>
+            {
+                last_failure = Some(error.message);
+                tokio::time::sleep(reliability.retry_delay()).await;
+            }
+            Err(error) => return Err(error.message),
+        }
     }
 
-    let response = tokio::time::timeout(Duration::from_secs(8), request.send())
-        .await
-        .map_err(|_| "Connection failed".to_string())?
-        .map_err(|error| format!("Connection failed: {error}"))?;
-
-    if response.status().is_success() {
-        Ok(())
-    } else {
-        let status = response.status();
-        let body = response.text().await.unwrap_or_default();
-        let message =
-            extract_error_message(&body).unwrap_or_else(|| format!("Connection failed ({status})"));
-        Err(message)
-    }
+    Err(last_failure.unwrap_or_else(|| "Connection failed".to_string()))
 }
 
-async fn stream_chat_inner(
+async fn stream_chat_attempt(
     client: Client,
     request_id: u64,
     chat_id: u64,
     request: &ProviderRequest,
     tx: &UnboundedSender<ProviderEvent>,
-) -> Result<(), String> {
+) -> Result<(), ProviderFailure> {
     let mut builder = client
         .post(&request.endpoint)
         .json(&ChatCompletionsRequest {
@@ -200,38 +284,36 @@ async fn stream_chat_inner(
 
     if request.provider == ProviderKind::OpenRouter {
         builder = builder
-            .header(
-                "HTTP-Referer",
-                "https://github.com/pop-os/cosmic-applet-template",
-            )
+            .header("HTTP-Referer", "https://github.com/levlon/cosmic-ai-panel")
             .header("X-Title", "Cosmic AI Panel");
     }
 
-    let response = tokio::time::timeout(STREAM_START_TIMEOUT, builder.send())
+    let response = send_with_timeout(builder, request.reliability.timeout())
         .await
-        .map_err(|_| {
-            log_provider_warning(format!(
-                "stream start timeout while waiting for response headers (chat_id={chat_id}, request_id={request_id})"
-            ));
-            PROVIDER_TIMEOUT_ERROR.to_string()
-        })?
-        .map_err(|error| format!("Request failed: {error}"))?;
+        .inspect_err(|error| {
+            if error.kind == FailureKind::RetryableNetwork {
+                log_provider_warning(format!(
+                    "provider start error while waiting for response headers (chat_id={chat_id}, request_id={request_id}): {}",
+                    error.message
+                ));
+            }
+        })?;
 
     if !response.status().is_success() {
         let status = response.status();
         let body = response.text().await.unwrap_or_default();
         let message = extract_error_message(&body)
             .unwrap_or_else(|| format!("Provider request failed with status {status}."));
-        return Err(message);
+        return Err(ProviderFailure::fatal(message));
     }
 
     let mut stream = response.bytes_stream();
     let mut buffer = String::new();
     let mut has_assistant_text = false;
 
-    match tokio::time::timeout(STREAM_START_TIMEOUT, stream.next()).await {
+    match tokio::time::timeout(request.reliability.timeout(), stream.next()).await {
         Ok(Some(chunk)) => {
-            let chunk = chunk.map_err(|error| format!("Stream error: {error}"))?;
+            let chunk = chunk.map_err(|error| stream_chunk_failure(error, true))?;
             buffer.push_str(&String::from_utf8_lossy(&chunk));
 
             if process_stream_buffer(
@@ -240,23 +322,23 @@ async fn stream_chat_inner(
                 &mut buffer,
                 tx,
                 &mut has_assistant_text,
-            )? {
+            )
+            .map_err(ProviderFailure::fatal)?
+            {
                 return finish_stream(has_assistant_text);
             }
         }
-        Ok(None) => {
-            return Err(EMPTY_RESPONSE_ERROR.into());
-        }
+        Ok(None) => return Err(ProviderFailure::fatal(EMPTY_RESPONSE_ERROR)),
         Err(_) => {
             log_provider_warning(format!(
                 "stream start timeout while waiting for first chunk (chat_id={chat_id}, request_id={request_id})"
             ));
-            return Err(PROVIDER_TIMEOUT_ERROR.into());
+            return Err(ProviderFailure::retryable(PROVIDER_TIMEOUT_ERROR));
         }
     }
 
     while let Some(chunk) = stream.next().await {
-        let chunk = chunk.map_err(|error| format!("Stream error: {error}"))?;
+        let chunk = chunk.map_err(|error| stream_chunk_failure(error, !has_assistant_text))?;
         buffer.push_str(&String::from_utf8_lossy(&chunk));
 
         if process_stream_buffer(
@@ -265,19 +347,54 @@ async fn stream_chat_inner(
             &mut buffer,
             tx,
             &mut has_assistant_text,
-        )? {
+        )
+        .map_err(ProviderFailure::fatal)?
+        {
             return finish_stream(has_assistant_text);
         }
     }
 
     if !buffer.trim().is_empty() {
-        let outcome = handle_sse_event(request_id, chat_id, &buffer, tx, !has_assistant_text)?;
+        let outcome = handle_sse_event(request_id, chat_id, &buffer, tx, !has_assistant_text)
+            .map_err(ProviderFailure::fatal)?;
         if outcome.emitted_text {
             has_assistant_text = true;
         }
     }
 
     finish_stream(has_assistant_text)
+}
+
+async fn send_with_timeout(
+    request: reqwest::RequestBuilder,
+    timeout: Duration,
+) -> Result<reqwest::Response, ProviderFailure> {
+    let pending = request.send();
+    match tokio::time::timeout(timeout, pending).await {
+        Ok(Ok(response)) => Ok(response),
+        Ok(Err(error)) => {
+            if is_retryable_network_error(&error) {
+                Err(ProviderFailure::retryable(format!(
+                    "Request failed: {error}"
+                )))
+            } else {
+                Err(ProviderFailure::fatal(format!("Request failed: {error}")))
+            }
+        }
+        Err(_) => Err(ProviderFailure::retryable(PROVIDER_TIMEOUT_ERROR)),
+    }
+}
+
+fn stream_chunk_failure(error: reqwest::Error, allow_retry: bool) -> ProviderFailure {
+    if allow_retry && is_retryable_network_error(&error) {
+        ProviderFailure::retryable(format!("Stream error: {error}"))
+    } else {
+        ProviderFailure::fatal(format!("Stream error: {error}"))
+    }
+}
+
+fn is_retryable_network_error(error: &reqwest::Error) -> bool {
+    error.is_timeout() || error.is_connect() || error.is_request()
 }
 
 #[derive(Debug, Default, Clone, Copy)]
@@ -413,11 +530,11 @@ fn find_event_boundary(buffer: &str) -> Option<(usize, usize)> {
     }
 }
 
-fn finish_stream(has_assistant_text: bool) -> Result<(), String> {
+fn finish_stream(has_assistant_text: bool) -> Result<(), ProviderFailure> {
     if has_assistant_text {
         Ok(())
     } else {
-        Err(EMPTY_RESPONSE_ERROR.into())
+        Err(ProviderFailure::fatal(EMPTY_RESPONSE_ERROR))
     }
 }
 
@@ -478,9 +595,45 @@ fn role_name(role: ChatRole) -> &'static str {
 
 #[cfg(test)]
 mod tests {
-    use super::{ProviderEvent, extract_stream_text, handle_sse_event};
+    use super::{
+        FailureKind, ProviderEvent, ProviderReliability, build_request, extract_stream_text,
+        handle_sse_event,
+    };
+    use crate::chat::{AppSettings, ChatMessage, ChatRole, ChatSession, ProviderKind, UserProfile};
     use serde_json::json;
     use tokio::sync::mpsc::unbounded_channel;
+
+    #[test]
+    fn build_request_injects_profile_and_memory_context() {
+        let mut settings = AppSettings::default();
+        settings.profile = UserProfile {
+            name: Some("Lev".into()),
+            language: Some("English".into()),
+            response_style: Some("Concise".into()),
+        };
+        settings.memory = vec!["User uses COSMIC desktop".into()];
+        settings.provider.default_model = Some(crate::chat::SavedModel::new(
+            ProviderKind::OpenRouter,
+            "openrouter/model",
+        ));
+        settings.provider.saved_models = settings
+            .provider
+            .default_model
+            .clone()
+            .into_iter()
+            .collect();
+
+        let mut chat = ChatSession::new(1, ProviderKind::OpenRouter, "openrouter/model");
+        chat.messages
+            .push(ChatMessage::new(1, ChatRole::User, "hello there"));
+
+        let request = build_request(&settings, Some("key"), &chat).unwrap();
+
+        assert_eq!(request.reliability.timeout_seconds, 20);
+        assert_eq!(request.messages.len(), 2);
+        assert!(request.messages[0].content.contains("User profile:"));
+        assert!(request.messages[0].content.contains("Known user memory:"));
+    }
 
     #[test]
     fn extract_stream_text_uses_message_fallback() {
@@ -566,5 +719,18 @@ mod tests {
         let error = handle_sse_event(1, 2, "data: {not-json}", &tx, true).unwrap_err();
 
         assert_eq!(error, "Malformed response from provider");
+    }
+
+    #[test]
+    fn reliability_exposes_timeout_and_retry_delay() {
+        let reliability = ProviderReliability {
+            timeout_seconds: 11,
+            retry_attempts: 3,
+            retry_delay_seconds: 4,
+        };
+
+        assert_eq!(reliability.timeout().as_secs(), 11);
+        assert_eq!(reliability.retry_delay().as_secs(), 4);
+        assert_eq!(FailureKind::RetryableNetwork, FailureKind::RetryableNetwork);
     }
 }

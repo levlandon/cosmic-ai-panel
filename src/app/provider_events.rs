@@ -3,7 +3,10 @@
 use super::*;
 
 impl AppModel {
-    pub(in crate::app) fn build_provider_request(&self, chat_id: u64) -> Result<ProviderRequest, String> {
+    pub(in crate::app) fn build_provider_request(
+        &self,
+        chat_id: u64,
+    ) -> Result<ProviderRequest, String> {
         let chat = self
             .state
             .chats
@@ -13,12 +16,16 @@ impl AppModel {
 
         provider::build_request(
             &self.state.settings,
-            Some(self.state.settings.openrouter_api_key.as_str()),
+            Some(self.state.settings.provider.openrouter_api_key.as_str()),
             chat,
         )
     }
 
-    pub(in crate::app) fn start_provider_request(&mut self, chat_id: u64, request: ProviderRequest) {
+    pub(in crate::app) fn start_provider_request(
+        &mut self,
+        chat_id: u64,
+        request: ProviderRequest,
+    ) {
         self.abort_inflight_request();
 
         let request_id = self.next_request_id;
@@ -59,11 +66,16 @@ impl AppModel {
                     chat_id,
                     message,
                     request: ProviderRequest {
-                        provider: self.state.settings.provider,
+                        provider: self.state.settings.provider.active_provider,
                         endpoint: String::new(),
                         api_key: None,
                         model: String::new(),
                         messages: Vec::new(),
+                        reliability: provider::ProviderReliability {
+                            timeout_seconds: self.state.settings.provider.timeout_seconds,
+                            retry_attempts: self.state.settings.provider.retry_attempts,
+                            retry_delay_seconds: self.state.settings.provider.retry_delay_seconds,
+                        },
                     },
                     assistant_message_id: error.assistant_message_id,
                 });
@@ -75,7 +87,12 @@ impl AppModel {
         Task::none()
     }
 
-    pub(in crate::app) fn handle_provider_delta(&mut self, request_id: u64, chat_id: u64, delta: String) {
+    pub(in crate::app) fn handle_provider_delta(
+        &mut self,
+        request_id: u64,
+        chat_id: u64,
+        delta: String,
+    ) {
         if delta.is_empty() {
             return;
         }
@@ -170,7 +187,12 @@ impl AppModel {
         self.persist_state();
     }
 
-    pub(in crate::app) fn handle_provider_failed(&mut self, request_id: u64, chat_id: u64, error: String) {
+    pub(in crate::app) fn handle_provider_failed(
+        &mut self,
+        request_id: u64,
+        chat_id: u64,
+        error: String,
+    ) {
         let Some(inflight) = self.inflight_request.take() else {
             return;
         };

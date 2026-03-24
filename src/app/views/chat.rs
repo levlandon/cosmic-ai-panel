@@ -1,8 +1,8 @@
 // SPDX-License-Identifier: MPL-2.0
 //! Chat panel rendering and empty-state UI.
 
-use super::super::*;
 use super::super::style::*;
+use super::super::*;
 use crate::fl;
 use cosmic::iced_widget::{container, row, scrollable, text};
 
@@ -49,20 +49,21 @@ impl AppModel {
             .class(composer_editor_class())
             .width(composer_editor_width);
 
-        let mut send_button = button::custom(
-            container(
-                widget::text::body(if is_generating { "■" } else { "↑" })
-                    .size(if is_generating { 14 } else { 20 }),
+        let mut send_button =
+            button::custom(
+                container(
+                    widget::text::body(if is_generating { "■" } else { "↑" })
+                        .size(if is_generating { 14 } else { 20 }),
+                )
+                .width(Length::Fill)
+                .height(Length::Fill)
+                .center_x(Length::Fill)
+                .center_y(Length::Fill),
             )
-            .width(Length::Fill)
-            .height(Length::Fill)
-            .center_x(Length::Fill)
-            .center_y(Length::Fill),
-        )
-        .width(Length::Fixed(36.0))
-        .height(Length::Fixed(36.0))
-        .padding(0)
-        .class(send_button_class());
+            .width(Length::Fixed(36.0))
+            .height(Length::Fixed(36.0))
+            .padding(0)
+            .class(send_button_class());
 
         if is_generating {
             send_button = send_button.on_press(Message::StopGeneration);
@@ -104,7 +105,7 @@ impl AppModel {
             Color::from_rgb(1.0, 0.42, 0.42)
         };
 
-        if self.state.settings.saved_models.is_empty() {
+        if self.state.settings.provider.saved_models.is_empty() {
             return widget::text::body(self.active_model_label())
                 .class(cosmic::theme::Text::Color(tone))
                 .width(Length::Fixed(CHAT_MODEL_DROPDOWN_WIDTH))

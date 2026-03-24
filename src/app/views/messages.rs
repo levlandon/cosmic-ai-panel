@@ -1,8 +1,8 @@
 // SPDX-License-Identifier: MPL-2.0
 //! Message rendering helpers, action rows, and markdown viewer widgets.
 
-use super::super::*;
 use super::super::style::*;
+use super::super::*;
 use cosmic::iced_widget::{column, container, rich_text, row, scrollable};
 
 impl AppModel {
