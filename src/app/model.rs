@@ -264,11 +264,16 @@ impl AppModel {
     }
 
     pub(in crate::app) fn active_model_options(&self) -> Vec<String> {
+        let Some(provider) = self.active_chat().map(|chat| chat.provider) else {
+            return Vec::new();
+        };
+
         self.state
             .settings
             .provider
             .saved_models
             .iter()
+            .filter(|model| model.provider == provider)
             .map(SavedModel::chat_dropdown_label)
             .collect()
     }
@@ -276,12 +281,17 @@ impl AppModel {
     pub(in crate::app) fn active_model_index(&self) -> Option<usize> {
         let chat = self.active_chat()?;
         let selected = SavedModel::normalized(chat.provider, &chat.model)?;
+
         self.state
             .settings
             .provider
             .saved_models
             .iter()
-            .position(|model| model == &selected)
+            .enumerate()
+            .filter_map(|(index, model)| {
+                (model.provider == chat.provider).then_some((index, model))
+            })
+            .position(|(_, model)| model == &selected)
     }
 
     pub(in crate::app) fn can_follow_chat(&self) -> bool {
@@ -329,7 +339,7 @@ impl AppModel {
             let should_clear = match copied {
                 CopiedTarget::Message(message_id) => message_ids.contains(message_id),
                 CopiedTarget::CodeBlock { message_id, .. } => message_ids.contains(message_id),
-                CopiedTarget::SettingsExport => false,
+                CopiedTarget::AiMigrationPrompt => false,
             };
             if should_clear {
                 self.copied_target = None;

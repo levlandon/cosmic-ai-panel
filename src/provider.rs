@@ -135,7 +135,31 @@ pub fn build_request(
         return Err("Nothing to send yet.".into());
     }
 
-    let (endpoint, api_key) = match chat.provider {
+    build_custom_request(
+        settings,
+        session_openrouter_key,
+        chat.provider,
+        &model,
+        messages,
+    )
+}
+
+pub fn build_custom_request(
+    settings: &AppSettings,
+    session_openrouter_key: Option<&str>,
+    provider: ProviderKind,
+    model: &str,
+    messages: Vec<ProviderMessage>,
+) -> Result<ProviderRequest, String> {
+    let model = model.trim().to_string();
+    if model.is_empty() {
+        return Err("Set a model in Provider settings first.".into());
+    }
+    if messages.is_empty() {
+        return Err("Nothing to send yet.".into());
+    }
+
+    let (endpoint, api_key) = match provider {
         ProviderKind::OpenRouter => {
             let key = session_openrouter_key
                 .map(str::trim)
@@ -154,7 +178,7 @@ pub fn build_request(
     };
 
     Ok(ProviderRequest {
-        provider: chat.provider,
+        provider,
         endpoint,
         api_key,
         model,
@@ -165,6 +189,26 @@ pub fn build_request(
             retry_delay_seconds: settings.provider.retry_delay_seconds,
         },
     })
+}
+
+pub async fn generate_text(client: Client, request: ProviderRequest) -> Result<String, String> {
+    let max_attempts = usize::from(request.reliability.retry_attempts) + 1;
+    let mut last_failure = None;
+
+    for attempt in 0..max_attempts {
+        match generate_text_attempt(client.clone(), &request).await {
+            Ok(text) => return Ok(text),
+            Err(error)
+                if error.kind == FailureKind::RetryableNetwork && attempt + 1 < max_attempts =>
+            {
+                last_failure = Some(error.message);
+                tokio::time::sleep(request.reliability.retry_delay()).await;
+            }
+            Err(error) => return Err(error.message),
+        }
+    }
+
+    Err(last_failure.unwrap_or_else(|| "Provider request failed".into()))
 }
 
 pub async fn stream_chat(
@@ -385,11 +429,68 @@ async fn send_with_timeout(
     }
 }
 
+async fn generate_text_attempt(
+    client: Client,
+    request: &ProviderRequest,
+) -> Result<String, ProviderFailure> {
+    let mut builder = client
+        .post(&request.endpoint)
+        .json(&ChatCompletionsRequest {
+            model: &request.model,
+            messages: &request.messages,
+            stream: false,
+        });
+
+    if let Some(api_key) = &request.api_key {
+        builder = builder.bearer_auth(api_key);
+    }
+
+    if request.provider == ProviderKind::OpenRouter {
+        builder = builder
+            .header("HTTP-Referer", "https://github.com/levlon/cosmic-ai-panel")
+            .header("X-Title", "Cosmic AI Panel");
+    }
+
+    let response = send_with_timeout(builder, request.reliability.timeout()).await?;
+    if !response.status().is_success() {
+        let status = response.status();
+        let body = response.text().await.unwrap_or_default();
+        let message = extract_error_message(&body)
+            .unwrap_or_else(|| format!("Provider request failed with status {status}."));
+        return Err(ProviderFailure::fatal(message));
+    }
+
+    let body = response
+        .text()
+        .await
+        .map_err(|error| body_read_failure(error, true))?;
+    let payload: Value =
+        serde_json::from_str(&body).map_err(|error| ProviderFailure::fatal(error.to_string()))?;
+
+    if let Some(error_message) = payload
+        .get("error")
+        .and_then(|error| error.get("message"))
+        .and_then(Value::as_str)
+    {
+        return Err(ProviderFailure::fatal(error_message.to_string()));
+    }
+
+    extract_completion_text(&payload).ok_or_else(|| ProviderFailure::fatal(EMPTY_RESPONSE_ERROR))
+}
+
 fn stream_chunk_failure(error: reqwest::Error, allow_retry: bool) -> ProviderFailure {
     if allow_retry && is_retryable_network_error(&error) {
         ProviderFailure::retryable(format!("Stream error: {error}"))
     } else {
         ProviderFailure::fatal(format!("Stream error: {error}"))
+    }
+}
+
+fn body_read_failure(error: reqwest::Error, allow_retry: bool) -> ProviderFailure {
+    if allow_retry && is_retryable_network_error(&error) {
+        ProviderFailure::retryable(format!("Response read failed: {error}"))
+    } else {
+        ProviderFailure::fatal(format!("Response read failed: {error}"))
     }
 }
 
@@ -484,6 +585,12 @@ fn extract_stream_text(value: &Value, allow_message_fallback: bool) -> Option<St
     }
 
     None
+}
+
+fn extract_completion_text(value: &Value) -> Option<String> {
+    extract_string(value.pointer("/choices/0/message/content"))
+        .or_else(|| extract_string(value.pointer("/choices/0/delta/content")))
+        .or_else(|| extract_string(value.pointer("/choices/0/text")))
 }
 
 fn extract_string(value: Option<&Value>) -> Option<String> {

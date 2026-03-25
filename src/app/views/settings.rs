@@ -174,47 +174,31 @@ impl AppModel {
                 network_section.add(invalid_caption("Retry delay must be a whole number"));
         }
 
-        let mut saved_models_list = widget::column().spacing(spacing.space_s);
-        for (index, model) in self.settings_ui.form.saved_models.iter().enumerate() {
-            saved_models_list = saved_models_list.push(self.saved_model_row(index, model));
-        }
-
-        let saved_models_list: Element<'_, Message> =
-            if self.settings_ui.form.saved_models.len() > 5 {
-                scrollable(saved_models_list)
-                    .class(cosmic::style::iced::Scrollable::Minimal)
-                    .direction(thin_vertical_scrollbar())
-                    .height(Length::Fixed(280.0))
-                    .into()
-            } else {
-                saved_models_list.into()
-            };
-
-        let saved_models_section = widget::settings::section()
-            .title("Saved models")
-            .add(saved_models_list)
-            .add(button::standard("Add model").on_press(Message::OpenAddModelModal));
-
-        let default_model_section = if self.settings_ui.form.saved_models.is_empty() {
-            widget::settings::section().title("Default model").add(
-                widget::text::caption("Add at least one model").class(cosmic::theme::Text::Color(
-                    Color::from_rgba(1.0, 1.0, 1.0, 0.56),
-                )),
-            )
-        } else {
-            let options = self.settings_ui.form.default_model_options();
+        let filter_summary = self.settings_ui.form.model_filter_summary();
+        let default_model_summary = self
+            .settings_ui
+            .form
+            .default_model
+            .as_ref()
+            .map(SavedModel::dropdown_label)
+            .unwrap_or_else(|| "No default model selected".into());
+        let models_section =
             widget::settings::section()
-                .title("Default model")
-                .add(widget::settings::item(
-                    "Default model",
-                    widget::dropdown(
-                        options,
-                        self.settings_ui.form.default_model_index(),
-                        Message::DefaultModelSelected,
-                    )
-                    .padding([8, 0, 8, 16]),
+                .title("Models")
+                .add(
+                    widget::text::caption(format!(
+                        "{} saved models · list filter: {}",
+                        self.settings_ui.form.saved_models.len(),
+                        filter_summary
+                    ))
+                    .class(cosmic::theme::Text::Color(Color::from_rgba(
+                        1.0, 1.0, 1.0, 0.56,
+                    ))),
+                )
+                .add(widget::text::caption(default_model_summary).class(
+                    cosmic::theme::Text::Color(Color::from_rgba(1.0, 1.0, 1.0, 0.56)),
                 ))
-        };
+                .add(button::standard("Manage Models").on_press(Message::OpenManageModelsModal));
 
         let mut context_section = widget::settings::section()
             .title("Context")
@@ -240,8 +224,7 @@ impl AppModel {
         widget::settings::view_column(vec![
             provider_section.into(),
             network_section.into(),
-            saved_models_section.into(),
-            default_model_section.into(),
+            models_section.into(),
             context_section.into(),
         ])
         .into()
@@ -266,32 +249,35 @@ impl AppModel {
 
         let profile_section = widget::settings::section()
             .title("Profile")
-            .add(widget::settings::item(
+            .add(settings_field_block(
                 "Name",
                 full_width_text_input("Optional", &self.settings_ui.form.profile_name)
-                    .on_input(Message::ProfileNameChanged),
+                    .on_input(Message::ProfileNameChanged)
+                    .into(),
             ))
-            .add(widget::settings::item(
+            .add(settings_field_block(
                 "Preferred language",
                 full_width_text_input("Optional", &self.settings_ui.form.profile_language)
-                    .on_input(Message::ProfileLanguageChanged),
+                    .on_input(Message::ProfileLanguageChanged)
+                    .into(),
             ))
-            .add(widget::settings::item(
+            .add(settings_field_block(
                 "Occupation",
                 container(
                     widget::text_editor(&self.settings_ui.occupation_content)
                         .id(self.settings_ui.occupation_editor_id.clone())
                         .on_action(Message::ProfileOccupationEdited)
                         .padding([8, 0])
-                        .height(Length::Fixed(88.0))
+                        .height(Length::Fixed(92.0))
                         .wrapping(core_text::Wrapping::WordOrGlyph)
                         .class(composer_editor_class()),
                 )
                 .padding([spacing.space_s, spacing.space_m])
                 .width(Length::Fill)
-                .class(composer_container_class()),
+                .class(composer_container_class())
+                .into(),
             ))
-            .add(widget::settings::item(
+            .add(settings_field_block(
                 "Response style",
                 column![
                     button::standard("Edit response style")
@@ -301,9 +287,10 @@ impl AppModel {
                     ),
                 ]
                 .spacing(spacing.space_xxs)
-                .width(Length::Fill),
+                .width(Length::Fill)
+                .into(),
             ))
-            .add(widget::settings::item(
+            .add(settings_field_block(
                 "More about you",
                 column![
                     button::standard("Edit more about you")
@@ -313,9 +300,10 @@ impl AppModel {
                     ),
                 ]
                 .spacing(spacing.space_xxs)
-                .width(Length::Fill),
+                .width(Length::Fill)
+                .into(),
             ))
-            .add(widget::settings::item(
+            .add(settings_field_block(
                 "Header & Lists",
                 container(
                     widget::dropdown(
@@ -325,9 +313,10 @@ impl AppModel {
                     )
                     .padding([8, 0, 8, 16]),
                 )
-                .width(Length::Fill),
+                .width(Length::Fill)
+                .into(),
             ))
-            .add(widget::settings::item(
+            .add(settings_field_block(
                 "Emoji",
                 container(
                     widget::dropdown(
@@ -337,43 +326,56 @@ impl AppModel {
                     )
                     .padding([8, 0, 8, 16]),
                 )
-                .width(Length::Fill),
+                .width(Length::Fill)
+                .into(),
             ));
 
-        let mut memory_rows = widget::column().spacing(spacing.space_s);
-        for (index, item) in self.settings_ui.form.memory_items.iter().enumerate() {
-            memory_rows = memory_rows.push(self.memory_item_row(index, item));
-        }
-
-        let memory_content: Element<'_, Message> = if self.settings_ui.form.memory_items.is_empty()
-        {
-            widget::text::caption("No manual memory yet")
-                .class(cosmic::theme::Text::Color(Color::from_rgba(
-                    1.0, 1.0, 1.0, 0.56,
-                )))
-                .into()
+        let memory_summary = if self.settings_ui.form.memory_items.is_empty() {
+            "No manual memory yet".to_string()
         } else {
-            memory_rows.into()
+            format!(
+                "{} memory items saved",
+                self.settings_ui.form.memory_items.len()
+            )
         };
 
         let memory_section = widget::settings::section()
             .title("Memory")
-            .add(memory_content)
-            .add(button::standard("Add memory item").on_press(Message::AddMemoryItem));
+            .add(
+                widget::text::caption(memory_summary).class(cosmic::theme::Text::Color(
+                    Color::from_rgba(1.0, 1.0, 1.0, 0.56),
+                )),
+            )
+            .add(button::standard("Manage memory").on_press(Message::OpenManageMemoryModal));
 
-        let management_section = widget::settings::section()
-            .title("Manage personalization")
+        let mut management_section = widget::settings::section()
+            .title("Personalization tools")
+            .add(button::standard("✨ AI Migration").on_press(Message::OpenAiMigrationModal))
             .add(
                 row![
                     button::standard("Import profile")
-                        .on_press(Message::OpenImportPersonalizationModal),
+                        .on_press(Message::ImportPersonalizationFromFile),
                     button::standard("Export profile")
-                        .on_press(Message::OpenExportPersonalizationModal),
-                    button::text("Reset personalization").on_press(Message::ResetPersonalization),
+                        .on_press(Message::ExportPersonalizationToFile),
                 ]
                 .spacing(spacing.space_s)
                 .width(Length::Fill),
+            )
+            .add(
+                button::text("Reset personalization")
+                    .on_press(Message::OpenResetPersonalizationConfirm),
             );
+
+        if let Some(notice) = &self.settings_ui.personalization_notice {
+            let color = if notice.is_error() {
+                Color::from_rgb(1.0, 0.42, 0.42)
+            } else {
+                Color::from_rgba(1.0, 1.0, 1.0, 0.62)
+            };
+            management_section = management_section.add(
+                widget::text::caption(notice.message()).class(cosmic::theme::Text::Color(color)),
+            );
+        }
 
         widget::settings::view_column(vec![
             prompt_section.into(),
@@ -433,6 +435,20 @@ fn compact_text_preview(value: &str) -> String {
             preview
         }
     }
+}
+
+fn settings_field_block<'a>(label: &'a str, control: Element<'a, Message>) -> Element<'a, Message> {
+    let spacing = cosmic::theme::spacing();
+
+    column![
+        widget::text::caption(label).class(cosmic::theme::Text::Color(Color::from_rgba(
+            1.0, 1.0, 1.0, 0.62
+        ))),
+        container(control).width(Length::Fill),
+    ]
+    .spacing(spacing.space_xxs)
+    .width(Length::Fill)
+    .into()
 }
 
 fn invalid_caption(content: &'static str) -> Element<'static, Message> {

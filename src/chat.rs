@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: MPL-2.0
 
-use serde::{Deserialize, Serialize};
+use serde::{Deserialize, Deserializer, Serialize};
 use std::collections::HashSet;
 use std::fmt;
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -37,6 +37,127 @@ impl ProviderKind {
 impl fmt::Display for ProviderKind {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.write_str(self.label())
+    }
+}
+
+#[derive(Debug, Clone, Copy, Eq, PartialEq, Serialize)]
+#[serde(default)]
+pub struct ModelFilterSettings {
+    pub openrouter: bool,
+    pub lmstudio: bool,
+}
+
+impl ModelFilterSettings {
+    pub fn all() -> Self {
+        Self {
+            openrouter: true,
+            lmstudio: true,
+        }
+    }
+
+    pub fn from_provider(provider: ProviderKind) -> Self {
+        match provider {
+            ProviderKind::OpenRouter => Self {
+                openrouter: true,
+                lmstudio: false,
+            },
+            ProviderKind::LmStudio => Self {
+                openrouter: false,
+                lmstudio: true,
+            },
+        }
+    }
+
+    pub fn allows(self, provider: ProviderKind) -> bool {
+        match provider {
+            ProviderKind::OpenRouter => self.openrouter,
+            ProviderKind::LmStudio => self.lmstudio,
+        }
+    }
+
+    pub fn select_all(&mut self) {
+        *self = Self::all();
+    }
+
+    pub fn from_index(index: usize) -> Self {
+        match index {
+            1 => Self::from_provider(ProviderKind::OpenRouter),
+            2 => Self::from_provider(ProviderKind::LmStudio),
+            _ => Self::all(),
+        }
+    }
+
+    pub fn index(self) -> usize {
+        match (self.openrouter, self.lmstudio) {
+            (true, false) => 1,
+            (false, true) => 2,
+            _ => 0,
+        }
+    }
+
+    pub fn ensure_valid(&mut self) {
+        if !self.openrouter && !self.lmstudio {
+            self.select_all();
+        }
+    }
+
+    pub fn summary_label(self) -> &'static str {
+        match (self.openrouter, self.lmstudio) {
+            (true, true) => "All",
+            (true, false) => "OpenRouter",
+            (false, true) => "LM Studio",
+            (false, false) => "All",
+        }
+    }
+}
+
+impl Default for ModelFilterSettings {
+    fn default() -> Self {
+        Self::all()
+    }
+}
+
+#[derive(Debug, Clone, Copy, Default, Eq, PartialEq, Serialize, Deserialize)]
+pub enum ModelFilterKind {
+    #[default]
+    All,
+    OpenRouter,
+    LmStudio,
+}
+
+#[derive(Debug, Clone, Copy, Default, Eq, PartialEq, Deserialize)]
+#[serde(default)]
+struct ModelFilterSettingsFields {
+    openrouter: bool,
+    lmstudio: bool,
+}
+
+#[derive(Debug, Clone, Copy, Deserialize)]
+#[serde(untagged)]
+enum ModelFilterSettingsSerde {
+    Current(ModelFilterSettingsFields),
+    Legacy(ModelFilterKind),
+}
+
+impl<'de> Deserialize<'de> for ModelFilterSettings {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        let value = ModelFilterSettingsSerde::deserialize(deserializer)?;
+        let mut filter = match value {
+            ModelFilterSettingsSerde::Current(fields) => Self {
+                openrouter: fields.openrouter,
+                lmstudio: fields.lmstudio,
+            },
+            ModelFilterSettingsSerde::Legacy(kind) => match kind {
+                ModelFilterKind::All => Self::all(),
+                ModelFilterKind::OpenRouter => Self::from_provider(ProviderKind::OpenRouter),
+                ModelFilterKind::LmStudio => Self::from_provider(ProviderKind::LmStudio),
+            },
+        };
+        filter.ensure_valid();
+        Ok(filter)
     }
 }
 
@@ -159,6 +280,9 @@ pub struct ProviderSettings {
     pub lmstudio_base_url: String,
     pub saved_models: Vec<SavedModel>,
     pub default_model: Option<SavedModel>,
+    pub model_filter: ModelFilterSettings,
+    #[serde(default, skip_serializing)]
+    pub follow_provider_selection: bool,
     pub timeout_seconds: u64,
     pub retry_attempts: u8,
     pub retry_delay_seconds: u64,
@@ -217,13 +341,12 @@ impl ProviderSettings {
                 .saved_models
                 .iter()
                 .find(|model| model.provider == self.active_provider)
-                .cloned()
-                .or_else(|| self.saved_models.first().cloned());
+                .cloned();
         }
 
-        if let Some(default_model) = &self.default_model {
-            self.active_provider = default_model.provider;
-        }
+        // Legacy flag is ignored now; the filter only affects the model list UI.
+        self.follow_provider_selection = false;
+        self.model_filter.ensure_valid();
 
         self.lmstudio_base_url = self.lmstudio_base_url.trim().to_string();
         self.timeout_seconds = self.timeout_seconds.clamp(5, 120);
@@ -248,6 +371,8 @@ impl Default for ProviderSettings {
             lmstudio_base_url: "http://127.0.0.1:1234/v1".into(),
             saved_models: Vec::new(),
             default_model: None,
+            model_filter: ModelFilterSettings::default(),
+            follow_provider_selection: false,
             timeout_seconds: 20,
             retry_attempts: 1,
             retry_delay_seconds: 2,

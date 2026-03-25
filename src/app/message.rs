@@ -1,6 +1,7 @@
 //! Message definitions emitted by the application and its widgets.
 
 use super::*;
+use crate::runtime::personalization::AiMigrationOutcome;
 
 #[derive(Debug, Clone)]
 pub enum Message {
@@ -50,12 +51,15 @@ pub enum Message {
     ProviderSelected(usize),
     OpenRouterKeyChanged(String),
     LmStudioUrlChanged(String),
+    ModelFilterSelected(usize),
     ProviderTimeoutChanged(String),
     ProviderRetryAttemptsChanged(String),
     ProviderRetryDelayChanged(String),
     ContextLimitChanged(String),
     DefaultModelSelected(usize),
     ActiveModelSelected(usize),
+    OpenManageModelsModal,
+    OpenManageMemoryModal,
     OpenAddModelModal,
     CloseSettingsModal,
     AddModelProviderSelected(usize),
@@ -65,12 +69,27 @@ pub enum Message {
     OpenSystemPromptModal,
     OpenResponseStyleModal,
     OpenMoreAboutYouModal,
-    OpenImportPersonalizationModal,
-    OpenExportPersonalizationModal,
+    ImportPersonalizationFromFile,
+    ImportPersonalizationFinished(
+        Result<Option<(String, crate::personalization::PersonalizationSettings)>, String>,
+    ),
+    ExportPersonalizationToFile,
+    ExportPersonalizationFinished(Result<Option<String>, String>),
+    OpenAiMigrationModal,
+    CopyAiMigrationPrompt,
+    AiMigrationModelSelected(usize),
+    AiMigrationEdited(widget::text_editor::Action),
+    StartAiMigration,
+    RetryAiMigration,
+    ReturnToAiMigrationEditor,
+    AiMigrationTick,
+    AiMigrationFinished {
+        request_id: u64,
+        result: Result<AiMigrationOutcome, String>,
+    },
     OpenPromptPreviewModal,
     SettingsModalEdited(widget::text_editor::Action),
     SaveSettingsModal,
-    CopyExportedPersonalization,
     ProfileNameChanged(String),
     ProfileLanguageChanged(String),
     ProfileOccupationEdited(widget::text_editor::Action),
@@ -78,9 +97,11 @@ pub enum Message {
     EmojiSelected(usize),
     PromptPreviewModeSelected(PromptPreviewMode),
     AddMemoryItem,
+    MemorySearchChanged(String),
     MemoryItemChanged(usize, String),
     RemoveMemoryItem(usize),
-    ResetPersonalization,
+    OpenResetPersonalizationConfirm,
+    ConfirmResetPersonalization,
     SkillDatetimeToggled(bool),
     SkillClipboardToggled(bool),
     SkillFilesystemToggled(bool),

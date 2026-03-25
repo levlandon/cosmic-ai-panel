@@ -40,6 +40,8 @@ features = [
     "wayland",
     # Windowing support for X11, Windows, Mac, & Redox
     "winit",
+    # XDG portal file dialogs on Linux
+    "xdg-portal",
 ]
 
 [patch.'https://github.com/pop-os/libcosmic.git']

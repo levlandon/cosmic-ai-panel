@@ -140,6 +140,10 @@ impl AppModel {
                 self.set_lmstudio_url(value);
                 Task::none()
             }
+            Message::ModelFilterSelected(index) => {
+                self.select_model_filter(index);
+                Task::none()
+            }
             Message::ProviderTimeoutChanged(value) => {
                 self.set_provider_timeout(value);
                 Task::none()
@@ -162,6 +166,14 @@ impl AppModel {
             }
             Message::ActiveModelSelected(index) => {
                 self.select_active_model(index);
+                Task::none()
+            }
+            Message::OpenManageModelsModal => {
+                self.open_manage_models_modal();
+                Task::none()
+            }
+            Message::OpenManageMemoryModal => {
+                self.open_manage_memory_modal();
                 Task::none()
             }
             Message::OpenAddModelModal => {
@@ -200,12 +212,43 @@ impl AppModel {
                 self.open_more_about_you_modal();
                 Task::none()
             }
-            Message::OpenImportPersonalizationModal => {
-                self.open_import_personalization_modal();
+            Message::ImportPersonalizationFromFile => self.import_personalization_from_file(),
+            Message::ImportPersonalizationFinished(result) => {
+                self.finish_import_personalization(result);
                 Task::none()
             }
-            Message::OpenExportPersonalizationModal => {
-                self.open_export_personalization_modal();
+            Message::ExportPersonalizationToFile => self.export_personalization_to_file(),
+            Message::ExportPersonalizationFinished(result) => {
+                self.finish_export_personalization(result);
+                Task::none()
+            }
+            Message::OpenAiMigrationModal => {
+                self.open_ai_migration_modal();
+                Task::none()
+            }
+            Message::CopyAiMigrationPrompt => self.copy_to_clipboard(
+                CopiedTarget::AiMigrationPrompt,
+                crate::runtime::personalization::ai_migration_helper_prompt_markdown(),
+            ),
+            Message::AiMigrationModelSelected(index) => {
+                self.select_ai_migration_model(index);
+                Task::none()
+            }
+            Message::AiMigrationEdited(action) => {
+                self.edit_ai_migration_input(action);
+                Task::none()
+            }
+            Message::StartAiMigration | Message::RetryAiMigration => self.start_ai_migration(),
+            Message::ReturnToAiMigrationEditor => {
+                self.return_to_ai_migration_editor();
+                Task::none()
+            }
+            Message::AiMigrationTick => {
+                self.tick_ai_migration_progress();
+                Task::none()
+            }
+            Message::AiMigrationFinished { request_id, result } => {
+                self.finish_ai_migration(request_id, result);
                 Task::none()
             }
             Message::OpenPromptPreviewModal => {
@@ -220,7 +263,6 @@ impl AppModel {
                 self.save_settings_modal();
                 Task::none()
             }
-            Message::CopyExportedPersonalization => self.copy_exported_personalization(),
             Message::ProfileNameChanged(value) => {
                 self.set_profile_name(value);
                 Task::none()
@@ -249,6 +291,10 @@ impl AppModel {
                 self.add_memory_item();
                 Task::none()
             }
+            Message::MemorySearchChanged(value) => {
+                self.set_memory_search_query(value);
+                Task::none()
+            }
             Message::MemoryItemChanged(index, value) => {
                 self.set_memory_item(index, value);
                 Task::none()
@@ -257,7 +303,11 @@ impl AppModel {
                 self.remove_memory_item(index);
                 Task::none()
             }
-            Message::ResetPersonalization => {
+            Message::OpenResetPersonalizationConfirm => {
+                self.open_reset_personalization_confirm();
+                Task::none()
+            }
+            Message::ConfirmResetPersonalization => {
                 self.reset_personalization();
                 Task::none()
             }

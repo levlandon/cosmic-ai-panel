@@ -1,8 +1,8 @@
 // SPDX-License-Identifier: MPL-2.0
 
 use crate::chat::{
-    AppSettings, ChatMessage, ChatRole, ChatSession, ProviderKind, ProviderSettings, SavedModel,
-    SkillsSettings, UserProfile, default_base_system_prompt,
+    AppSettings, ChatMessage, ChatRole, ChatSession, ModelFilterSettings, ProviderKind,
+    ProviderSettings, SavedModel, SkillsSettings, UserProfile, default_base_system_prompt,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -254,6 +254,8 @@ impl LegacyAppSettings {
                 lmstudio_base_url: self.lmstudio_base_url,
                 saved_models: self.saved_models,
                 default_model: self.default_model,
+                model_filter: ModelFilterSettings::default(),
+                follow_provider_selection: false,
                 timeout_seconds: self.timeout_seconds.unwrap_or(20),
                 retry_attempts: self.retry_attempts.unwrap_or(1),
                 retry_delay_seconds: self.retry_delay_seconds.unwrap_or(2),

@@ -105,8 +105,19 @@ impl AppModel {
             Color::from_rgb(1.0, 0.42, 0.42)
         };
 
-        if self.state.settings.provider.saved_models.is_empty() {
-            return widget::text::body(self.active_model_label())
+        let model_options = self.active_model_options();
+        if model_options.is_empty() {
+            let label = if self.state.settings.provider.saved_models.is_empty() {
+                self.active_model_label()
+            } else {
+                let provider = self
+                    .active_chat()
+                    .map(|chat| chat.provider.label())
+                    .unwrap_or("current");
+                format!("No models for {provider}")
+            };
+
+            return widget::text::body(label)
                 .class(cosmic::theme::Text::Color(tone))
                 .width(Length::Fixed(CHAT_MODEL_DROPDOWN_WIDTH))
                 .align_x(alignment::Horizontal::Center)
@@ -114,7 +125,7 @@ impl AppModel {
         }
 
         widget::dropdown(
-            self.active_model_options(),
+            model_options,
             self.active_model_index(),
             Message::ActiveModelSelected,
         )

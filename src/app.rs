@@ -46,8 +46,8 @@ use cosmic::widget::{self, button, header_bar};
 use message::Message;
 use reqwest::Client;
 pub(in crate::app) use settings_state::{
-    ConnectionTestState, PromptPreviewMode, SettingsForm, SettingsModal, SettingsTab,
-    SettingsUiState, SettingsValidationError, TextEditorModal,
+    AiMigrationState, ConnectionTestState, PromptPreviewMode, SettingsForm, SettingsModal,
+    SettingsNotice, SettingsTab, SettingsUiState, SettingsValidationError, TextEditorModal,
 };
 use std::cell::Cell;
 use std::collections::{HashMap, HashSet};
@@ -110,7 +110,7 @@ struct TransientChatNotice {
 pub(crate) enum CopiedTarget {
     Message(u64),
     CodeBlock { message_id: u64, block_index: usize },
-    SettingsExport,
+    AiMigrationPrompt,
 }
 
 fn panel_reserved_margin(core: &Core) -> IcedMargin {

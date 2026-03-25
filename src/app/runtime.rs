@@ -95,6 +95,12 @@ impl AppModel {
             } else {
                 Subscription::none()
             },
+            if self.settings_ui.ai_migration_state.is_animating() {
+                time::every(Duration::from_millis(LOADING_TICK_MS))
+                    .map(|_| Message::AiMigrationTick)
+            } else {
+                Subscription::none()
+            },
             provider_events_subscription().map(Message::ProviderEvent),
         ])
     }
